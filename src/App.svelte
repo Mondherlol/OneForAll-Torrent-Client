@@ -541,7 +541,7 @@
     <div class="brand">
       <img class="logo" src={logo} alt="OneForAll" />
       <span class="brand-name">
-        <b>ONEFORALL</b>
+        <b>OneForAll</b>
         <small>TORRENT CLIENT{#if upd.current} <em>v{upd.current}</em>{/if}</small>
       </span>
     </div>
@@ -765,9 +765,9 @@
   .brand { display: flex; align-items: center; gap: 10px; flex: none; }
   .logo { width: 36px; height: 36px; border-radius: 9px; }
   /* Logo horizontal : nom en lettres condensées + « Torrent client » */
-  .brand-name { display: flex; flex-direction: column; line-height: 1; transform: skewX(-8deg); }
-  .brand-name b { font-family: Bahnschrift, "Arial Narrow", Impact, sans-serif; font-stretch: condensed; font-weight: 800; font-size: 21px; letter-spacing: 0.02em; color: var(--text); }
-  .brand-name small { margin-top: 3px; padding-top: 3px; border-top: 2px solid var(--accent); font-family: Bahnschrift, "Arial Narrow", sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: 0.28em; color: var(--accent); white-space: nowrap; }
+  .brand-name { display: flex; flex-direction: column; line-height: 1; }
+  .brand-name b { font-family: Bahnschrift, "Segoe UI", sans-serif; font-weight: 700; font-size: 19px; letter-spacing: -0.01em; color: var(--text); }
+  .brand-name small { margin-top: 3px; font-family: Bahnschrift, "Segoe UI", sans-serif; font-size: 9px; font-weight: 600; letter-spacing: 0.22em; color: var(--accent); white-space: nowrap; }
   .brand-name em { font-style: normal; letter-spacing: 0.05em; opacity: 0.75; }
 
   .resume-add { position: fixed; left: 20px; bottom: 20px; z-index: 130; display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px; border-radius: 999px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-lg); animation: bob 2s ease-in-out infinite; }
@@ -815,7 +815,7 @@
   .boot h2 { margin: 18px 0 0; font-size: 18px; }
   .boot p { margin: 0; color: var(--muted); font-size: 13px; }
   .boot-logo { position: relative; width: 84px; height: 84px; display: grid; place-items: center; }
-  .boot-logo .core { position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 18px; box-shadow: 0 10px 30px -8px #5dffc0; animation: float 2.4s ease-in-out infinite; }
+  .boot-logo .core { position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 18px; box-shadow: 0 10px 30px -10px var(--accent); animation: float 2.4s ease-in-out infinite; }
   .boot-logo .pulse { position: absolute; inset: 10px; border-radius: 22px; border: 2px solid var(--accent); opacity: 0; animation: ripple 2.4s ease-out infinite; }
   .boot-logo .r2 { animation-delay: 1.2s; }
   @keyframes ripple { 0% { transform: scale(0.9); opacity: 0.6; } 100% { transform: scale(1.7); opacity: 0; } }
