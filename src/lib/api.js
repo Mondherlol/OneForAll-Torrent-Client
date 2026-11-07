@@ -33,3 +33,5 @@ export const getSources = (hash) => invoke("get_sources", { hash });
 export const qbitStatus = () => invoke("qbit_status");
 export const setupQbit = () => invoke("setup_qbit");
 export const openUrl = (url) => invoke("open_url", { url });
+export const setCustomIcon = (path) => invoke("set_custom_icon", { path });
+export const getCustomIcon = () => invoke("get_custom_icon");

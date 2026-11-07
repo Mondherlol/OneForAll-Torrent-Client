@@ -1,6 +1,7 @@
 mod artwork;
 mod assoc;
 mod config;
+mod customicon;
 mod installed;
 mod media;
 mod qbit;
@@ -1081,6 +1082,17 @@ async fn setup_qbit(state: State<'_, AppState>) -> Result<(), String> {
     Err("qBittorrent a été configuré mais ne répond pas encore. Réessaie dans un instant.".into())
 }
 
+/// Icône personnalisée (sur ce PC uniquement). path absent = revenir à l'icône d'origine.
+#[tauri::command]
+fn set_custom_icon(app: tauri::AppHandle, path: Option<String>) -> Result<Option<String>, String> {
+    customicon::set(&app, path)
+}
+
+#[tauri::command]
+fn get_custom_icon() -> Option<String> {
+    customicon::current()
+}
+
 /// Ouvre une page web (uniquement https) dans le navigateur.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -1200,6 +1212,7 @@ pub fn run() {
         })
         .setup(|app| {
             build_tray(app)?;
+            customicon::apply_saved(app.handle());
             // .torrent / magnet: → OneForAll
             std::thread::spawn(assoc::register);
             // Lancé en double-cliquant un .torrent (ou un lien magnet) ?
@@ -1266,6 +1279,8 @@ pub fn run() {
             qbit_status,
             setup_qbit,
             open_url,
+            set_custom_icon,
+            get_custom_icon,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de OneForAll");

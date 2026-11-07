@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.2.4"
+version = "0.2.5"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
@@ -33,6 +33,7 @@ tauri-plugin-process = "2"
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 base64 = "0.23.1"
 getrandom = "0.4.3"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 
 # Binaire final : petit et rapide
 [profile.release]

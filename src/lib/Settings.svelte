@@ -3,7 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, trashFiles, reveal } from "./api.js";
+  import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, setCustomIcon, getCustomIcon, trashFiles, reveal } from "./api.js";
   import { KINDS, fmtDate, fmtSize, fmtSpeed } from "./model.js";
   import { confirmAsk, flash } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
@@ -41,6 +41,34 @@
       flash(String(e));
     } finally {
       saving = false;
+    }
+  }
+
+  // Icône personnalisée (sur ce PC)
+  let customIcon = $state(null);
+  $effect(() => {
+    getCustomIcon().then((b) => (customIcon = b ? `data:image/png;base64,${b}` : null)).catch(() => {});
+  });
+  function iconChanged(b64) {
+    customIcon = b64 ? `data:image/png;base64,${b64}` : null;
+    window.dispatchEvent(new CustomEvent("oneforall-icon", { detail: customIcon }));
+  }
+  async function pickIcon() {
+    const file = await pickFolder({ multiple: false, filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+    if (typeof file !== "string") return;
+    try {
+      iconChanged(await setCustomIcon(file));
+      flash("Icône appliquée ✓ (les raccourcis se mettent à jour dans quelques secondes)");
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  async function resetIcon() {
+    try {
+      iconChanged(await setCustomIcon(null));
+      flash("Icône d'origine remise");
+    } catch (e) {
+      flash(String(e));
     }
   }
 
@@ -189,6 +217,14 @@
       <div class="seg big">
         <button class:on={prefs.theme === "light"} onclick={() => (prefs.theme = "light")}><Icon name="sun" size={15} />Clair</button>
         <button class:on={prefs.theme === "dark"} onclick={() => (prefs.theme = "dark")}><Icon name="moon" size={15} />Sombre</button>
+      </div>
+
+      <h3>Icône de l'app (sur ce PC)</h3>
+      <p class="hint">Mets l'image que tu veux : les bords unis sont retirés et elle est recadrée en carré. Elle reste uniquement sur ce PC (fenêtre, barre des tâches, raccourcis).</p>
+      <div class="row icon-row">
+        {#if customIcon}<img class="icon-prev" src={customIcon} alt="" />{/if}
+        <button class="btn" onclick={pickIcon}><Icon name="image" size={15} />Choisir une image…</button>
+        {#if customIcon}<button class="btn" onclick={resetIcon}>Icône d'origine</button>{/if}
       </div>
 
       <h3>Limites de vitesse</h3>
@@ -403,6 +439,8 @@
   nav button { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 0; border-radius: 9px; background: none; color: var(--text-2); font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer; text-align: left; }
   nav button:hover { background: var(--chip); color: var(--text); }
   nav button.on { background: var(--accent-soft); color: var(--accent); }
+  .icon-row { gap: 10px; }
+  .icon-prev { width: 44px; height: 44px; border-radius: 10px; box-shadow: var(--shadow-sm); }
   .about { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line); }
   .ver { font-size: 12px; color: var(--muted); }
   .ver b { color: var(--text); }

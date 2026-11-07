@@ -10,7 +10,7 @@
   import AddTorrent from "./lib/AddTorrent.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { listen } from "@tauri-apps/api/event";
-  import { stageTorrents, qbitStatus, setupQbit, openUrl } from "./lib/api.js";
+  import { stageTorrents, qbitStatus, setupQbit, openUrl, getCustomIcon } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -22,6 +22,15 @@
     return () => (clearTimeout(t), clearInterval(id));
   });
   let updDismissed = $state(false);
+
+  // Icône personnalisée (sur ce PC) : aussi utilisée comme logo en haut à gauche
+  let customLogo = $state(null);
+  $effect(() => {
+    getCustomIcon().then((b) => (customLogo = b ? `data:image/png;base64,${b}` : null)).catch(() => {});
+    const on = (e) => (customLogo = e.detail);
+    window.addEventListener("oneforall-icon", on);
+    return () => window.removeEventListener("oneforall-icon", on);
+  });
 
   // ---------- qBittorrent pas encore relié ----------
   let qstatus = $state(null);
@@ -558,7 +567,7 @@
 <div class="app">
   <header class="top">
     <div class="brand">
-      <img class="logo" src={logo} alt="OneForAll" />
+      <img class="logo" src={customLogo ?? logo} alt="OneForAll" />
       <span class="brand-name">
         <b>OneForAll</b>
         <small>TORRENT CLIENT{#if upd.current} <em>v{upd.current}</em>{/if}</small>
