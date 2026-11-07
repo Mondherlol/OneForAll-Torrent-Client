@@ -104,7 +104,7 @@ if (!fs.existsSync(setupPath) || !fs.existsSync(sigPath)) fail(`Installateur ou 
 // ---------- notes ----------
 const prevTag = (() => {
   try {
-    return out("git describe --tags --abbrev=0");
+    return execSync("git describe --tags --abbrev=0 HEAD~1", { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return null;
   }
