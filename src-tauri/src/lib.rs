@@ -469,6 +469,56 @@ async fn stage_torrents(state: State<'_, AppState>, urls: Vec<String>, paths: Ve
     Ok(stage(&state, &urls, &paths).await)
 }
 
+// ---------- un dossier par série ----------
+
+/// Nom de dossier d'une série : la variante du titre avec apostrophe si elle existe (« JoJo's » plutôt que « JoJos »).
+fn show_folder_name(titles: &[&str]) -> String {
+    let best = titles.iter().find(|t| t.contains('\'')).or(titles.first()).copied().unwrap_or("Série");
+    safe_name(best).trim_end_matches('.').to_string()
+}
+
+fn same_dir(a: &str, b: &str) -> bool {
+    let n = |s: &str| s.replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    n(a) == n(b)
+}
+
+/// Dossier cible d'un torrent de série : « <base>\<Titre> » (base = dossier actuel, sans le dossier de série s'il y est déjà).
+fn show_target(save_path: &str, folder: &str) -> String {
+    let p = Path::new(save_path.trim_end_matches(['\\', '/']));
+    let base = if p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(folder)) { p.parent().unwrap_or(p) } else { p };
+    base.join(folder).display().to_string()
+}
+
+/// Range chaque série (épisodes en torrents séparés) dans son propre dossier. Renvoie le nombre de torrents déplacés.
+#[tauri::command]
+async fn organize_shows(state: State<'_, AppState>, group_key: Option<String>) -> Result<usize, String> {
+    let media = get_torrents(state.clone()).await?;
+    let mut groups: HashMap<String, Vec<&Media>> = HashMap::new();
+    for m in media.iter().filter(|m| matches!(m.kind, Kind::Series | Kind::Anime) && m.status != media::Status::Error) {
+        if group_key.as_ref().is_none_or(|k| *k == m.group_key) {
+            groups.entry(m.group_key.clone()).or_default().push(m);
+        }
+    }
+    let mut moved = 0;
+    for items in groups.values() {
+        // Une série en un seul torrent-dossier est déjà regroupée
+        let single_files = items.iter().filter(|m| Path::new(&m.content_path).is_file()).count();
+        if items.len() < 2 && single_files == 0 {
+            continue;
+        }
+        let titles: Vec<&str> = items.iter().map(|m| m.title.as_str()).collect();
+        let folder = show_folder_name(&titles);
+        for m in items {
+            let target = show_target(&m.save_path, &folder);
+            if !same_dir(&m.save_path, &target) {
+                state.qbit.set_location(&[m.hash.clone()], &target).await?;
+                moved += 1;
+            }
+        }
+    }
+    Ok(moved)
+}
+
 /// Déplace les fichiers des torrents dans un autre dossier.
 #[tauri::command]
 async fn set_location(state: State<'_, AppState>, hashes: Vec<String>, location: String) -> Result<(), String> {
@@ -1044,6 +1094,26 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
                 let h = vec![t.hash.clone()];
                 let _ = st.qbit.set_category(&h, cat).await;
                 let _ = st.qbit.set_auto_tmm(&h, true).await;
+
+                // Épisode de série : dans le dossier de la série (« D:\Series\JoJo's Bizarre Adventure\ »),
+                // avec les autres épisodes déjà présents
+                if kind == "series" || kind == "anime" {
+                    let me = Media::from_raw(t.clone());
+                    let siblings: Vec<Media> = ts.iter().filter(|o| o.hash != t.hash).map(|o| Media::from_raw(o.clone())).filter(|o| o.group_key == me.group_key).collect();
+                    if !siblings.is_empty() || is_media(&t.name) {
+                        let base = cfg
+                            .folders
+                            .get(kind)
+                            .filter(|f| !f.is_empty())
+                            .cloned()
+                            .or_else(|| cats.get(cat).map(|c| c.save_path.clone()).filter(|p| !p.is_empty()))
+                            .unwrap_or_else(|| t.save_path.clone());
+                        let mut titles: Vec<&str> = siblings.iter().map(|o| o.title.as_str()).collect();
+                        titles.push(&me.title);
+                        let target = show_target(&base, &show_folder_name(&titles));
+                        let _ = st.qbit.set_location(&h, &target).await;
+                    }
+                }
             }
         }
     }
@@ -1298,6 +1368,7 @@ pub fn run() {
             set_category,
             trash_torrent_files,
             set_location,
+            organize_shows,
             search_torrents,
             stage_torrents,
             preview_torrent,
@@ -1347,6 +1418,16 @@ pub fn run() {
 mod tests {
     use super::nat_cmp;
     use std::cmp::Ordering;
+
+    #[test]
+    fn show_folders() {
+        use super::{same_dir, show_folder_name, show_target};
+        assert_eq!(show_folder_name(&["JoJos Bizarre Adventure", "JoJo's Bizarre Adventure"]), "JoJo's Bizarre Adventure");
+        let f = "JoJo's Bizarre Adventure";
+        assert_eq!(show_target(r"D:\Series", f), r"D:\Series\JoJo's Bizarre Adventure");
+        // Déjà dans le dossier de la série : on ne crée pas « …\JoJo's…\JoJo's… »
+        assert!(same_dir(&show_target(r"D:\Series\JoJo's Bizarre Adventure", f), r"D:\Series\JoJo's Bizarre Adventure"));
+    }
 
     #[test]
     fn natural_sort() {

@@ -10,7 +10,7 @@
   import AddTorrent from "./lib/AddTorrent.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { listen } from "@tauri-apps/api/event";
-  import { stageTorrents, qbitStatus, setupQbit, openUrl, getCustomIcon } from "./lib/api.js";
+  import { stageTorrents, qbitStatus, setupQbit, openUrl, getCustomIcon, organizeShows } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -336,6 +336,17 @@
     refresh();
   }
 
+  /** Range une série (ou toutes, si `key` est absent) dans son propre dossier. */
+  async function organize(key = null) {
+    try {
+      const n = await organizeShows(key);
+      flash(n ? `${n} épisode${n > 1 ? "s" : ""} rangé${n > 1 ? "s" : ""} dans le dossier de leur série` : "Déjà rangé ✓");
+      refresh();
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+
   async function uninstall(prog) {
     const ok = await confirmAsk(`Désinstaller « ${prog.name} » ?`, "Le désinstalleur du programme va s'ouvrir.", "Désinstaller", true);
     if (!ok) return;
@@ -452,6 +463,11 @@
       anyPaused && { label: one ? "Reprendre" : "Tout reprendre", icon: "play", run: () => onaction("resume", incomplete) },
       { label: "Revérifier", icon: "refresh", run: () => onaction("recheck", its) },
       { label: "Déplacer…", icon: "move", run: () => moveTo(its) },
+      (g.kind === "series" || g.kind === "anime") && its.length > 1 && {
+        label: "Ranger dans un dossier de série",
+        icon: "folder",
+        run: () => organize(g.artKey),
+      },
       categoryMenu(its),
       shareMenu(its, one),
       "-",

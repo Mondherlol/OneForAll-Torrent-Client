@@ -3,7 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, setCustomIcon, getCustomIcon, trashFiles, reveal } from "./api.js";
+  import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, setCustomIcon, getCustomIcon, organizeShows, trashFiles, reveal } from "./api.js";
   import { KINDS, fmtDate, fmtSize, fmtSpeed } from "./model.js";
   import { confirmAsk, flash } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
@@ -74,6 +74,26 @@
       flash("Icône d'origine remise");
     } catch (e) {
       flash(String(e));
+    }
+  }
+
+  // Un dossier par série
+  let organizing = $state(false);
+  async function organizeAll() {
+    const ok = await confirmAsk(
+      "Ranger chaque série dans son dossier ?",
+      "Les épisodes d'une même série sont déplacés dans un dossier à son nom (ex. D:\\Series\\JoJo's Bizarre Adventure). Les torrents continuent de fonctionner.",
+      "Ranger",
+    );
+    if (!ok) return;
+    organizing = true;
+    try {
+      const n = await organizeShows(null);
+      flash(n ? `${n} épisode${n > 1 ? "s" : ""} rangé${n > 1 ? "s" : ""} ✓` : "Tout est déjà rangé ✓");
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      organizing = false;
     }
   }
 
@@ -309,6 +329,15 @@
         </div>
       {/if}
     {:else if tab === "storage"}
+      <div class="card organize">
+        <div class="srow">
+          <span class="sl"><Icon name="folder" size={15} />Un dossier par série <i class="info" title="Les épisodes d'une même série (torrents séparés) sont regroupés dans un dossier à son nom, ex. D:\Series\JoJo's Bizarre Adventure. Les nouveaux épisodes y vont automatiquement.">i</i></span>
+          <button class="btn sm primary" disabled={organizing} onclick={organizeAll}>
+            <Icon name="folder" size={13} />{organizing ? "Rangement…" : "Ranger les séries"}
+          </button>
+        </div>
+      </div>
+
       <h3>Disques</h3>
       <div class="disks">
         {#each disks as d}
@@ -422,6 +451,7 @@
   nav button:hover { background: var(--chip); color: var(--text); }
   nav button.on { background: var(--accent-soft); color: var(--accent); }
   .icon-row { gap: 10px; }
+  .card.organize { margin-bottom: 18px; }
   .icon-prev { width: 44px; height: 44px; border-radius: 10px; box-shadow: var(--shadow-sm); }
   /* version + mise à jour : une seule ligne compacte */
   .about { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 10px 6px 2px 10px; border-top: 1px solid var(--line); }
