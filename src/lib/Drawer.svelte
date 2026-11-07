@@ -4,7 +4,7 @@
   import Files from "./Files.svelte";
   import Sources from "./Sources.svelte";
   import { KINDS, STATUS_LABEL, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
-  import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup } from "./ui.svelte.js";
+  import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup, alignEpisodes } from "./ui.svelte.js";
 
   let { group: g, onclose, onaction, onitemmenu } = $props();
 
@@ -28,15 +28,13 @@
   });
   const curSeason = $derived(Math.max(0, ...g.items.map((i) => i.season ?? 0)));
   // Épisodes de la saison en cours (AniList : saison 0 = « en cours »)
-  const seasonEps = $derived(sched ? sched.episodes.filter((e) => e.season === 0 || e.season === (curSeason || 1)) : []);
   const ownedNums = $derived(new Set(g.items.filter((i) => (i.season ?? curSeason) === curSeason && i.episode != null).map((i) => i.episode)));
+  const seasonEps = $derived(alignEpisodes(sched, ownedNums, curSeason, now));
   const nextEp = $derived.by(() => {
     if (!sched) return null;
     // Prochain épisode pas encore téléchargé (certaines équipes sortent un épisode en avance)
     const future = seasonEps.filter((e) => airTime(e) > now && !ownedNums.has(e.number)).sort((a, b) => airTime(a) - airTime(b));
-    if (future.length) return future[0];
-    const n = sched.next;
-    return n && airTime(n) > now && !ownedNums.has(n.number) ? n : null;
+    return future[0] ?? null;
   });
   // Liste : épisodes téléchargés + épisodes sortis manquants + prochain épisode (en pointillés)
   const rows = $derived.by(() => {

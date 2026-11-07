@@ -79,17 +79,33 @@ impl Schedules {
                 }
             }
         }
-        let mut found: Result<Option<Schedule>, reqwest::Error> = Ok(None);
-        let order: &[&str] = if kind == "anime" { &["anilist", "tvmaze"] } else { &["tvmaze"] };
+        // Les deux sources (dans l'ordre le plus probable), et on garde la meilleure :
+        // un prochain épisode annoncé > une diffusion en cours > le reste.
+        // (ex. JoJo : TVmaze le dit « terminé », AniList a Steel Ball Run en cours)
+        let order: [&str; 2] = if kind == "anime" { ["anilist", "tvmaze"] } else { ["tvmaze", "anilist"] };
+        let score = |s: &Schedule| s.next.is_some() as i32 * 2 + matches!(s.status.as_str(), "Running" | "RELEASING") as i32;
+        let mut best: Option<Schedule> = None;
+        let mut any_ok = false;
         'outer: for src in order {
             for q in queries.iter().map(String::as_str) {
-                found = if *src == "anilist" { self.anilist(q).await } else { self.tvmaze(q, kind == "anime").await };
-                if matches!(found, Ok(Some(_))) || found.is_err() {
-                    break 'outer;
+                let r = if src == "anilist" { self.anilist(q).await } else { self.tvmaze(q, kind == "anime").await };
+                let Ok(r) = r else { continue };
+                any_ok = true;
+                if let Some(s) = r {
+                    if best.as_ref().is_none_or(|b| score(&s) > score(b)) {
+                        best = Some(s);
+                    }
+                    if best.as_ref().is_some_and(|b| score(b) >= 2) {
+                        break 'outer; // prochain épisode trouvé : inutile de chercher plus
+                    }
+                    break; // source suivante
                 }
             }
         }
-        let found = found.ok()?; // erreur réseau : pas de cache, on réessaiera
+        if !any_ok {
+            return None; // erreur réseau : pas de cache, on réessaiera
+        }
+        let found = best;
         self.cache.lock().unwrap().insert(key, (Instant::now(), found.clone()));
         found
     }
@@ -171,7 +187,7 @@ mod tests {
     fn live_schedule() {
         let s = super::Schedules::new();
         tauri::async_runtime::block_on(async {
-            for (t, k) in [(vec!["JoJos Bizarre Adventure".to_string(), "JoJo's Bizarre Adventure".to_string()], "anime"), (vec!["Dreamland".into()], "anime"), (vec!["Loki".into()], "series")] {
+            for (t, k) in [(vec!["JoJos Bizarre Adventure".to_string(), "JoJo's Bizarre Adventure".to_string()], "series"), (vec!["Dreamland".into()], "anime"), (vec!["Loki".into()], "series")] {
                 let t = &t;
                 match s.get(t, k).await {
                     Some(x) => println!(

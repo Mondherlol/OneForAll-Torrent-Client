@@ -1,7 +1,7 @@
 <script>
   import Icon from "./Icon.svelte";
   import { KIND_LABEL, PLAYABLE, STATUS_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
-  import { arts, wantArt, schedules, wantSchedule, airTime } from "./ui.svelte.js";
+  import { arts, wantArt, schedules, wantSchedule, airTime, alignEpisodes } from "./ui.svelte.js";
 
   let { group: g, sort, selected = false, onclick, ondblclick, onaction, oncontext } = $props();
 
@@ -24,9 +24,10 @@
     const s = isShow ? schedules[g.artKey] : null;
     if (!s) return null;
     const now = Date.now();
-    const owned = new Set(g.items.map((i) => i.episode).filter((n) => n != null));
-    const future = s.episodes.filter((e) => airTime(e) > now && !owned.has(e.number)).sort((a, b) => airTime(a) - airTime(b));
-    const ep = future[0] ?? (s.next && airTime(s.next) > now && !owned.has(s.next.number) ? s.next : null);
+    const season = Math.max(0, ...g.items.map((i) => i.season ?? 0));
+    const owned = new Set(g.items.filter((i) => (i.season ?? season) === season).map((i) => i.episode).filter((n) => n != null));
+    const eps = alignEpisodes(s, owned, season, now);
+    const ep = eps.filter((e) => airTime(e) > now && !owned.has(e.number)).sort((a, b) => airTime(a) - airTime(b))[0];
     if (!ep) return null;
     const d = airTime(ep) - now;
     if (d > 8 * 86400000) return null;

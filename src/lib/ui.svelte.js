@@ -132,3 +132,18 @@ export function releaseGroup(name) {
   const tail = name.replace(/\.(mkv|mp4|avi)$/i, "").match(/-([A-Za-z0-9]+(?:-Raws)?)$/);
   return tail ? tail[1] : null;
 }
+
+/**
+ * Épisodes de la saison en cours, numérotés comme les fichiers de l'utilisateur.
+ * AniList recommence parfois à 1 là où les sorties continuent (« S06E08 » = épisode 7 d'AniList) :
+ * si on possède un numéro plus grand que le dernier épisode sorti, on en déduit le décalage.
+ */
+export function alignEpisodes(sched, owned, season, now = Date.now()) {
+  if (!sched) return [];
+  let eps = sched.episodes.filter((e) => e.season === 0 || e.season === (season || 1));
+  const aired = eps.filter((e) => airTime(e) && airTime(e) <= now).map((e) => e.number);
+  const lastAired = aired.length ? Math.max(...aired) : 0;
+  const maxOwned = owned.size ? Math.max(...owned) : 0;
+  const offset = sched.source === "anilist" && lastAired && maxOwned > lastAired ? maxOwned - lastAired : 0;
+  return offset ? eps.map((e) => ({ ...e, number: e.number + offset })) : eps;
+}
