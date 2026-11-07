@@ -1,77 +1,60 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Icône OneForAll : explosion d'énergie + bandeau incliné + monogramme « OFA » (création originale) -->
   <defs>
-    <!-- Fond bleu nuit → bleu électrique -->
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#071433"/>
-      <stop offset="0.55" stop-color="#0a2f7a"/>
-      <stop offset="1" stop-color="#0067c0"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#121d3d"/>
     </linearGradient>
-    <!-- Halo d'énergie derrière le + -->
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0" stop-color="#5dffc0" stop-opacity="0.65"/>
-      <stop offset="0.35" stop-color="#22d3ee" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="plus" x1="0" y1="0" x2="0.4" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="0.45" stop-color="#d9fbff"/>
-      <stop offset="1" stop-color="#6dffc8"/>
+    <linearGradient id="burst" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#0057d9"/>
+      <stop offset="0.55" stop-color="#1f9bff"/>
+      <stop offset="1" stop-color="#7df9ff"/>
     </linearGradient>
-    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    <linearGradient id="burst2" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.85"/>
     </linearGradient>
-    <filter id="bolt-glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="10" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="plus-glow" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="22" result="b"/>
-      <feFlood flood-color="#5dffc0" flood-opacity="0.75"/>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18" result="b"/>
+      <feFlood flood-color="#1f9bff" flood-opacity="0.9"/>
       <feComposite in2="b" operator="in" result="g"/>
       <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <clipPath id="card"><rect x="48" y="48" width="928" height="928" rx="220"/></clipPath>
+    <clipPath id="card"><rect x="40" y="40" width="944" height="944" rx="210"/></clipPath>
   </defs>
 
   <g clip-path="url(#card)">
-    <rect x="48" y="48" width="928" height="928" fill="url(#bg)"/>
-    <!-- Traits de vitesse (élan vers le haut) -->
-    <g stroke="#ffffff" stroke-linecap="round" opacity="0.10">
-      <line x1="120" y1="980" x2="520" y2="40" stroke-width="26"/>
-      <line x1="330" y1="1000" x2="760" y2="0" stroke-width="14"/>
-      <line x1="560" y1="1010" x2="980" y2="60" stroke-width="20"/>
-      <line x1="20" y1="760" x2="300" y2="120" stroke-width="10"/>
+    <rect x="40" y="40" width="944" height="944" fill="url(#bg)"/>
+
+    <!-- Explosion de pointes qui jaillit vers le haut -->
+    <g filter="url(#glow)">
+      <polygon fill="url(#burst)" points="
+        230,690 120,520 300,500 190,300 370,400 330,140 452,340
+        512,70 572,340 694,140 654,400 834,300 724,500 904,520 794,690 512,760"/>
     </g>
-    <circle cx="512" cy="512" r="430" fill="url(#glow)"/>
-    <!-- Reflet en haut -->
-    <rect x="48" y="48" width="928" height="420" fill="url(#edge)" opacity="0.35"/>
-  </g>
+    <polygon fill="url(#burst2)" transform="translate(512 640) scale(0.62) translate(-512 -640)" points="
+      230,690 120,520 300,500 190,300 370,400 330,140 452,340
+      512,70 572,340 694,140 654,400 834,300 724,500 904,520 794,690 512,760"/>
 
-  <!-- Le grand + -->
-  <g filter="url(#plus-glow)">
-    <rect x="422" y="200" width="180" height="624" rx="70" fill="url(#plus)"/>
-    <rect x="200" y="422" width="624" height="180" rx="70" fill="url(#plus)"/>
-  </g>
+    <!-- Bandeau incliné -->
+    <polygon points="96,560 928,468 928,742 96,834" fill="#000000" opacity="0.45" transform="translate(0 18)"/>
+    <polygon points="96,560 928,468 928,742 96,834" fill="#ffffff" stroke="#0b1020" stroke-width="22" stroke-linejoin="round"/>
+    <polygon points="96,800 928,708 928,742 96,834" fill="#1f9bff"/>
 
-  <!-- Éclairs d'énergie verts -->
-  <g filter="url(#bolt-glow)" fill="none" stroke="#5dffb0" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
-    <polyline points="236,236 318,316 282,342 380,418"/>
-    <polyline points="792,792 706,712 742,686 644,606"/>
-    <polyline points="788,240 724,322 760,336 690,420"/>
-    <polyline points="236,790 300,708 264,694 334,610"/>
-  </g>
-  <g fill="none" stroke="#e9fff6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
-    <polyline points="236,236 318,316 282,342 380,418"/>
-    <polyline points="792,792 706,712 742,686 644,606"/>
-    <polyline points="788,240 724,322 760,336 690,420"/>
-    <polyline points="236,790 300,708 264,694 334,610"/>
-  </g>
+    <!-- Monogramme OFA : lettres massives, condensées, en italique -->
+    <g transform="translate(512 640) rotate(-6.3) skewX(-12) scale(0.86) translate(-290 -150)" fill="#0b1020" fill-rule="evenodd">
+      <!-- O -->
+      <path d="M0 40 Q0 0 40 0 H120 Q160 0 160 40 V260 Q160 300 120 300 H40 Q0 300 0 260 Z M52 62 V238 H108 V62 Z"/>
+      <!-- F -->
+      <path transform="translate(200 0)" d="M0 0 H160 V64 H56 V122 H140 V184 H56 V300 H0 Z"/>
+      <!-- A -->
+      <path transform="translate(400 0)" d="M40 0 H140 L182 300 H124 L116 236 H64 L56 300 H-2 Z M74 178 H106 L94 72 H86 Z"/>
+    </g>
 
-  <!-- Étincelles -->
-  <g fill="#ffffff">
-    <path d="M846 140 l10 30 30 10 -30 10 -10 30 -10 -30 -30 -10 30 -10z" opacity="0.9"/>
-    <path d="M168 610 l7 20 20 7 -20 7 -7 20 -7 -20 -20 -7 20 -7z" opacity="0.7"/>
-    <path d="M640 880 l6 17 17 6 -17 6 -6 17 -6 -17 -17 -6 17 -6z" opacity="0.6"/>
+    <!-- Étincelles -->
+    <g fill="#ffffff">
+      <path d="M842 170 l12 34 34 12 -34 12 -12 34 -12 -34 -34 -12 34 -12z"/>
+      <path d="M170 220 l8 22 22 8 -22 8 -8 22 -8 -22 -22 -8 22 -8z" opacity="0.8"/>
+    </g>
   </g>
 </svg>

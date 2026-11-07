@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="380" viewBox="0 0 1500 380">
+  <!-- Logo horizontal OneForAll (icône + nom) -->
+  <g transform="translate(10 10) scale(0.352)">
+  <!-- Icône OneForAll : explosion d'énergie + bandeau incliné + monogramme « OFA » (création originale) -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#121d3d"/>
+    </linearGradient>
+    <linearGradient id="burst" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#0057d9"/>
+      <stop offset="0.55" stop-color="#1f9bff"/>
+      <stop offset="1" stop-color="#7df9ff"/>
+    </linearGradient>
+    <linearGradient id="burst2" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.85"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18" result="b"/>
+      <feFlood flood-color="#1f9bff" flood-opacity="0.9"/>
+      <feComposite in2="b" operator="in" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="card"><rect x="40" y="40" width="944" height="944" rx="210"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#card)">
+    <rect x="40" y="40" width="944" height="944" fill="url(#bg)"/>
+
+    <!-- Explosion de pointes qui jaillit vers le haut -->
+    <g filter="url(#glow)">
+      <polygon fill="url(#burst)" points="
+        230,690 120,520 300,500 190,300 370,400 330,140 452,340
+        512,70 572,340 694,140 654,400 834,300 724,500 904,520 794,690 512,760"/>
+    </g>
+    <polygon fill="url(#burst2)" transform="translate(512 640) scale(0.62) translate(-512 -640)" points="
+      230,690 120,520 300,500 190,300 370,400 330,140 452,340
+      512,70 572,340 694,140 654,400 834,300 724,500 904,520 794,690 512,760"/>
+
+    <!-- Bandeau incliné -->
+    <polygon points="96,560 928,468 928,742 96,834" fill="#000000" opacity="0.45" transform="translate(0 18)"/>
+    <polygon points="96,560 928,468 928,742 96,834" fill="#ffffff" stroke="#0b1020" stroke-width="22" stroke-linejoin="round"/>
+    <polygon points="96,800 928,708 928,742 96,834" fill="#1f9bff"/>
+
+    <!-- Monogramme OFA : lettres massives, condensées, en italique -->
+    <g transform="translate(512 640) rotate(-6.3) skewX(-12) scale(0.86) translate(-290 -150)" fill="#0b1020" fill-rule="evenodd">
+      <!-- O -->
+      <path d="M0 40 Q0 0 40 0 H120 Q160 0 160 40 V260 Q160 300 120 300 H40 Q0 300 0 260 Z M52 62 V238 H108 V62 Z"/>
+      <!-- F -->
+      <path transform="translate(200 0)" d="M0 0 H160 V64 H56 V122 H140 V184 H56 V300 H0 Z"/>
+      <!-- A -->
+      <path transform="translate(400 0)" d="M40 0 H140 L182 300 H124 L116 236 H64 L56 300 H-2 Z M74 178 H106 L94 72 H86 Z"/>
+    </g>
+
+    <!-- Étincelles -->
+    <g fill="#ffffff">
+      <path d="M842 170 l12 34 34 12 -34 12 -12 34 -12 -34 -34 -12 34 -12z"/>
+      <path d="M170 220 l8 22 22 8 -22 8 -8 22 -8 -22 -22 -8 22 -8z" opacity="0.8"/>
+    </g>
+  </g>
+</g>
+  <g transform="translate(400 0) skewX(-9)">
+    <text x="40" y="215" font-family="Bahnschrift, 'Arial Narrow', Impact, 'Helvetica Neue', sans-serif" font-stretch="condensed" font-weight="800" font-size="178" letter-spacing="2" fill="#ffffff" stroke="#ffffff" stroke-width="0">ONEFORALL</text>
+    <rect x="44" y="246" width="980" height="12" fill="#1f9bff"/>
+    <text x="46" y="330" font-family="Bahnschrift, 'Arial Narrow', 'Helvetica Neue', sans-serif" font-weight="700" font-size="56" letter-spacing="22" fill="#5fb8ff">TORRENT CLIENT</text>
+  </g>
+</svg>

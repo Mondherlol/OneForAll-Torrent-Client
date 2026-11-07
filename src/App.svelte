@@ -22,6 +22,11 @@
     return () => (clearTimeout(t), clearInterval(id));
   });
   let updDismissed = $state(false);
+
+  // Titre de la fenêtre : « OneForAll — Torrent Client v0.2.2 »
+  $effect(() => {
+    if (upd.current) getCurrentWindow().setTitle(`OneForAll — Torrent Client v${upd.current}`).catch(() => {});
+  });
   import Icon from "./lib/Icon.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { getCategories, getDisks, getTorrents, openPath, play, reveal, runSetup, setCategory, setLocation, shareTorrents, torrentAction, uninstallProgram } from "./lib/api.js";
@@ -535,7 +540,10 @@
   <header class="top">
     <div class="brand">
       <img class="logo" src={logo} alt="OneForAll" />
-      <span class="brand-name">OneForAll</span>
+      <span class="brand-name">
+        <b>ONEFORALL</b>
+        <small>TORRENT CLIENT{#if upd.current} <em>v{upd.current}</em>{/if}</small>
+      </span>
     </div>
 
     <button class="add" title="Ajouter un torrent (rechercher, magnet, fichier)" onclick={() => (addOpen = true)}><Icon name="plus" size={18} /></button>
@@ -754,8 +762,13 @@
     background: var(--topbar);
     backdrop-filter: blur(14px);
   }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: -0.01em; }
-  .logo { width: 32px; height: 32px; border-radius: 8px; }
+  .brand { display: flex; align-items: center; gap: 10px; flex: none; }
+  .logo { width: 36px; height: 36px; border-radius: 9px; }
+  /* Logo horizontal : nom en lettres condensées + « Torrent client » */
+  .brand-name { display: flex; flex-direction: column; line-height: 1; transform: skewX(-8deg); }
+  .brand-name b { font-family: Bahnschrift, "Arial Narrow", Impact, sans-serif; font-stretch: condensed; font-weight: 800; font-size: 21px; letter-spacing: 0.02em; color: var(--text); }
+  .brand-name small { margin-top: 3px; padding-top: 3px; border-top: 2px solid var(--accent); font-family: Bahnschrift, "Arial Narrow", sans-serif; font-size: 9.5px; font-weight: 700; letter-spacing: 0.28em; color: var(--accent); white-space: nowrap; }
+  .brand-name em { font-style: normal; letter-spacing: 0.05em; opacity: 0.75; }
 
   .resume-add { position: fixed; left: 20px; bottom: 20px; z-index: 130; display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px; border-radius: 999px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-lg); animation: bob 2s ease-in-out infinite; }
   @keyframes bob { 50% { transform: translateY(-3px); } }
@@ -908,6 +921,7 @@
   .toast button:hover { background: var(--accent); color: white; }
 
   /* Fenêtre étroite : on masque les libellés secondaires */
-  :global(.compact) .tlabel, :global(.compact) .brand-name { display: none; }
-  @media (max-width: 1250px) { .tlabel, .brand-name, .dtext { display: none; } }
+  :global(.compact) .tlabel { display: none; }
+  @media (max-width: 1250px) { .tlabel, .dtext { display: none; } }
+  @media (max-width: 900px) { .brand-name { display: none; } }
 </style>

@@ -162,6 +162,23 @@
     {#each TABS as t}
       <button class:on={tab === t.id} onclick={() => (tab = t.id)}><Icon name={t.icon} size={16} />{t.label}</button>
     {/each}
+
+    <!-- Version et mises à jour, en bas à gauche -->
+    <div class="about">
+      <span class="ver">OneForAll <b>v{upd.current}</b></span>
+      {#if upd.available}
+        <button class="upd hot" disabled={upd.progress != null} onclick={installUpdate}>
+          <Icon name="down" size={14} />
+          {upd.progress != null ? `Installation… ${Math.round((upd.progress ?? 0) * 100)} %` : `v${upd.available.version} disponible`}
+        </button>
+      {:else}
+        <button class="upd" disabled={upd.checking} onclick={() => checkUpdates().then((a) => !a && !upd.error && flash("OneForAll est à jour"))}>
+          <Icon name="refresh" size={13} />{upd.checking ? "Vérification…" : "Rechercher une mise à jour"}
+        </button>
+        {#if upd.checkedOnce && !upd.error && !upd.checking}<span class="ok">À jour ✓</span>{/if}
+        {#if upd.error}<span class="err" title={upd.error}>Vérification impossible</span>{/if}
+      {/if}
+    </div>
   </nav>
 
   <section>
@@ -222,25 +239,6 @@
           </div>
           <input type="checkbox" class="switch" bind:checked={settings.manage_qbit} onchange={save} />
         </label>
-
-        <h3>À propos</h3>
-        <div class="row">
-          <p class="hint inline">
-            OneForAll {upd.current}
-            {#if upd.available}· <b>version {upd.available.version} disponible</b>{:else if upd.checkedOnce && !upd.error}· à jour ✓{/if}
-            {#if upd.error}· <span title={upd.error}>vérification impossible</span>{/if}
-          </p>
-          <span class="spacer"></span>
-          {#if upd.available}
-            <button class="btn primary" disabled={upd.progress != null} onclick={installUpdate}>
-              {upd.progress != null ? `Installation… ${Math.round((upd.progress ?? 0) * 100)} %` : "Mettre à jour"}
-            </button>
-          {:else}
-            <button class="btn" disabled={upd.checking} onclick={() => checkUpdates().then((a) => !a && !upd.error && flash("OneForAll est à jour"))}>
-              {upd.checking ? "Vérification…" : "Rechercher des mises à jour"}
-            </button>
-          {/if}
-        </div>
 
         <h3>Trackers</h3>
         <p class="hint">
@@ -405,6 +403,14 @@
   nav button { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 0; border-radius: 9px; background: none; color: var(--text-2); font: inherit; font-size: 13.5px; font-weight: 550; cursor: pointer; text-align: left; }
   nav button:hover { background: var(--chip); color: var(--text); }
   nav button.on { background: var(--accent-soft); color: var(--accent); }
+  .about { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line); }
+  .ver { font-size: 12px; color: var(--muted); }
+  .ver b { color: var(--text); }
+  nav .upd { justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line-strong); background: var(--surface); font-size: 12px; font-weight: 650; }
+  nav .upd:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  nav .upd.hot { background: var(--accent); border-color: var(--accent); color: white; }
+  .about .ok { font-size: 11.5px; color: var(--ok); text-align: center; }
+  .about .err { font-size: 11.5px; color: var(--err); text-align: center; }
   section { flex: 1; overflow-y: auto; padding: 26px 32px 32px; position: relative; }
   .close { position: absolute; top: 16px; right: 16px; }
   h3 { margin: 22px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

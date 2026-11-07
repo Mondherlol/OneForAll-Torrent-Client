@@ -1,4 +1,9 @@
-# OneForAll
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-horizontal-dark.svg">
+    <img src="assets/logo-horizontal.svg" alt="OneForAll — Torrent Client" width="560">
+  </picture>
+</p>
 
 **Une interface moderne pour tes torrents.** OneForAll s'appuie sur qBittorrent (qui tourne en
 arrière-plan, invisible) et te donne une vraie bibliothèque : affiches, séries regroupées,
