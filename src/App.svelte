@@ -12,6 +12,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { stageTorrents } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
+  import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
 
   // Vérifie les mises à jour quelques secondes après le démarrage, puis toutes les 6 h
@@ -533,7 +534,7 @@
 <div class="app">
   <header class="top">
     <div class="brand">
-      <span class="logo"><Icon name="layers" size={17} /></span>
+      <img class="logo" src={logo} alt="OneForAll" />
       <span class="brand-name">OneForAll</span>
     </div>
 
@@ -637,7 +638,7 @@
         <div class="boot-logo">
           <span class="pulse r1"></span>
           <span class="pulse r2"></span>
-          <span class="core"><Icon name="layers" size={30} /></span>
+          <img class="core" src={logo} alt="" />
         </div>
         <h2>Démarrage du moteur…</h2>
         <p>qBittorrent se lance en arrière-plan</p>
@@ -754,7 +755,7 @@
     backdrop-filter: blur(14px);
   }
   .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: -0.01em; }
-  .logo { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; }
+  .logo { width: 32px; height: 32px; border-radius: 8px; }
 
   .resume-add { position: fixed; left: 20px; bottom: 20px; z-index: 130; display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 16px; border-radius: 999px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; box-shadow: var(--shadow-lg); animation: bob 2s ease-in-out infinite; }
   @keyframes bob { 50% { transform: translateY(-3px); } }
@@ -801,7 +802,7 @@
   .boot h2 { margin: 18px 0 0; font-size: 18px; }
   .boot p { margin: 0; color: var(--muted); font-size: 13px; }
   .boot-logo { position: relative; width: 84px; height: 84px; display: grid; place-items: center; }
-  .boot-logo .core { position: relative; z-index: 1; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 18px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: white; box-shadow: 0 10px 30px -8px var(--accent); animation: float 2.4s ease-in-out infinite; }
+  .boot-logo .core { position: relative; z-index: 1; width: 72px; height: 72px; border-radius: 18px; box-shadow: 0 10px 30px -8px #5dffc0; animation: float 2.4s ease-in-out infinite; }
   .boot-logo .pulse { position: absolute; inset: 10px; border-radius: 22px; border: 2px solid var(--accent); opacity: 0; animation: ripple 2.4s ease-out infinite; }
   .boot-logo .r2 { animation-delay: 1.2s; }
   @keyframes ripple { 0% { transform: scale(0.9); opacity: 0.6; } 100% { transform: scale(1.7); opacity: 0; } }

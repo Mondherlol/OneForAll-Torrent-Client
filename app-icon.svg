@@ -1,11 +1,77 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0067c0"/><stop offset="1" stop-color="#4cc2ff"/>
+    <!-- Fond bleu nuit → bleu électrique -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071433"/>
+      <stop offset="0.55" stop-color="#0a2f7a"/>
+      <stop offset="1" stop-color="#0067c0"/>
     </linearGradient>
+    <!-- Halo d'énergie derrière le + -->
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#5dffc0" stop-opacity="0.65"/>
+      <stop offset="0.35" stop-color="#22d3ee" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="plus" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#d9fbff"/>
+      <stop offset="1" stop-color="#6dffc8"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="bolt-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="plus-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="22" result="b"/>
+      <feFlood flood-color="#5dffc0" flood-opacity="0.75"/>
+      <feComposite in2="b" operator="in" result="g"/>
+      <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="card"><rect x="48" y="48" width="928" height="928" rx="220"/></clipPath>
   </defs>
-  <rect x="64" y="64" width="896" height="896" rx="210" fill="url(#g)"/>
-  <g fill="none" stroke="#0b0d12" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" transform="translate(212 212) scale(25)">
-    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+
+  <g clip-path="url(#card)">
+    <rect x="48" y="48" width="928" height="928" fill="url(#bg)"/>
+    <!-- Traits de vitesse (élan vers le haut) -->
+    <g stroke="#ffffff" stroke-linecap="round" opacity="0.10">
+      <line x1="120" y1="980" x2="520" y2="40" stroke-width="26"/>
+      <line x1="330" y1="1000" x2="760" y2="0" stroke-width="14"/>
+      <line x1="560" y1="1010" x2="980" y2="60" stroke-width="20"/>
+      <line x1="20" y1="760" x2="300" y2="120" stroke-width="10"/>
+    </g>
+    <circle cx="512" cy="512" r="430" fill="url(#glow)"/>
+    <!-- Reflet en haut -->
+    <rect x="48" y="48" width="928" height="420" fill="url(#edge)" opacity="0.35"/>
+  </g>
+
+  <!-- Le grand + -->
+  <g filter="url(#plus-glow)">
+    <rect x="422" y="200" width="180" height="624" rx="70" fill="url(#plus)"/>
+    <rect x="200" y="422" width="624" height="180" rx="70" fill="url(#plus)"/>
+  </g>
+
+  <!-- Éclairs d'énergie verts -->
+  <g filter="url(#bolt-glow)" fill="none" stroke="#5dffb0" stroke-width="20" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="236,236 318,316 282,342 380,418"/>
+    <polyline points="792,792 706,712 742,686 644,606"/>
+    <polyline points="788,240 724,322 760,336 690,420"/>
+    <polyline points="236,790 300,708 264,694 334,610"/>
+  </g>
+  <g fill="none" stroke="#e9fff6" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="236,236 318,316 282,342 380,418"/>
+    <polyline points="792,792 706,712 742,686 644,606"/>
+    <polyline points="788,240 724,322 760,336 690,420"/>
+    <polyline points="236,790 300,708 264,694 334,610"/>
+  </g>
+
+  <!-- Étincelles -->
+  <g fill="#ffffff">
+    <path d="M846 140 l10 30 30 10 -30 10 -10 30 -10 -30 -30 -10 30 -10z" opacity="0.9"/>
+    <path d="M168 610 l7 20 20 7 -20 7 -7 20 -7 -20 -20 -7 20 -7z" opacity="0.7"/>
+    <path d="M640 880 l6 17 17 6 -17 6 -6 17 -6 -17 -17 -6 17 -6z" opacity="0.6"/>
   </g>
 </svg>
