@@ -257,20 +257,12 @@
         <div class="card">
           <h3><Icon name="down" size={15} />Téléchargements</h3>
           <label class="srow">
-            <span class="sl"><Icon name="folder" size={14} />Rangement automatique <i class="info" title="Chaque nouveau torrent reçoit la catégorie de son type (Films, Séries, Jeux…) et part dans le bon dossier.">i</i></span>
-            <input type="checkbox" class="switch" bind:checked={settings.auto_sort} onchange={save} />
-          </label>
-          <label class="srow">
             <span class="sl"><Icon name="up" size={14} />Désactiver le partage (seed) <i class="info" title="Les torrents s'arrêtent dès la fin du téléchargement. Attention au ratio sur les trackers privés.">i</i></span>
             <input type="checkbox" class="switch" checked={!seeding} onchange={(e) => toggleSeed(!e.currentTarget.checked)} />
           </label>
           <label class="srow">
             <span class="sl"><Icon name="anime" size={14} />Séparer animés et séries <i class="info" title="Désactivé : les animés sont rangés et affichés comme des séries.">i</i></span>
             <input type="checkbox" class="switch" bind:checked={settings.split_anime} onchange={save} />
-          </label>
-          <label class="srow">
-            <span class="sl"><Icon name="layers" size={14} />Lancer et quitter qBittorrent avec l'app <i class="info" title="La croix réduit seulement OneForAll près de l'horloge ; « Quitter » (clic droit sur l'icône) ferme aussi qBittorrent.">i</i></span>
-            <input type="checkbox" class="switch" bind:checked={settings.manage_qbit} onchange={save} />
           </label>
         </div>
 
@@ -294,10 +286,6 @@
           <div class="srow">
             <span class="sl">Liens magnet <i class="info" title="Les .torrent s'ouvrent déjà dans OneForAll. Pour les liens magnet, Windows demande une fois : choisis OneForAll.">i</i></span>
             <button class="btn sm" onclick={() => openDefaultApps().catch((e) => flash(String(e)))}><Icon name="open" size={13} />Régler…</button>
-          </div>
-          <div class="srow">
-            <span class="sl">Notifications <i class="info" title="Une notification Windows avec l'affiche à la fin de chaque téléchargement.">i</i></span>
-            <button class="btn sm" onclick={() => testNotification().catch((e) => flash(String(e)))}><Icon name="alert" size={13} />Tester</button>
           </div>
         </div>
       {/if}

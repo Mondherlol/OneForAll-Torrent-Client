@@ -7,6 +7,7 @@ mod media;
 mod qbit;
 mod qsetup;
 mod scan;
+mod schedule;
 mod search;
 
 use artwork::{Art, Artwork};
@@ -32,6 +33,7 @@ struct AppState {
     qbit: Qbit,
     cfg: Mutex<Config>,
     art: Artwork,
+    schedules: schedule::Schedules,
     /// Torrents déjà vus par la tâche de fond (None = premier passage pas encore fait)
     seen: Mutex<Option<HashSet<String>>>,
     /// Séries pour lesquelles le mode séquentiel a déjà été réglé
@@ -365,7 +367,17 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
         .build()
         .map_err(|e| e.to_string())?;
     match source.as_str() {
-        "c411" => search::torznab(&client, "https://c411.org", &state.cfg().c411_key, query.trim(), "c411").await,
+        "c411" => {
+            let cfg = state.cfg();
+            let mut tmdb_key = cfg.tmdb_key.clone();
+            if tmdb_key.is_empty() {
+                tmdb_key = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
+            }
+            // Pour TMDB, on enlève le numéro d'épisode (« S06E09 », « - 09 »)
+            let title_only = regex::Regex::new(r"(?i)\s*(\bS\d{1,2}E\d{1,4}\b|\s-?\s*\d{1,4}\s*$)").unwrap().replace_all(query.trim(), "").to_string();
+            let ids = search::tmdb_ids(&client, &tmdb_key, title_only.trim()).await;
+            search::torznab(&client, "https://c411.org", &cfg.c411_key, query.trim(), "c411", ids).await
+        }
         _ => search::nyaa(&client, query.trim()).await,
     }
 }
@@ -661,10 +673,8 @@ async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result
     let cfg = {
         let mut c = state.cfg.lock().unwrap();
         c.folders = settings.folders.into_iter().map(|(k, v)| (k, v.trim().to_string())).collect();
-        c.auto_sort = settings.auto_sort;
         c.seq_episodes = settings.seq_episodes;
         c.tmdb_key = settings.tmdb_key.trim().to_string();
-        c.manage_qbit = settings.manage_qbit;
         c.split_anime = settings.split_anime;
         c.c411_key = settings.c411_key.trim().to_string();
         c.clone()
@@ -788,6 +798,12 @@ async fn get_artwork(state: State<'_, AppState>, key: String, kind: String, titl
         tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
     }
     Ok(state.art.get(&key, &kind, &title, year, &tmdb).await)
+}
+
+/// Calendrier de diffusion d'une série (prochain épisode, épisodes sortis).
+#[tauri::command]
+async fn get_schedule(state: State<'_, AppState>, titles: Vec<String>, kind: String) -> Result<Option<schedule::Schedule>, String> {
+    Ok(state.schedules.get(&titles, &kind).await)
 }
 
 #[tauri::command]
@@ -1212,6 +1228,7 @@ pub fn run() {
         qbit: Qbit::new(&cfg),
         cfg: Mutex::new(cfg),
         art: Artwork::new(),
+        schedules: schedule::Schedules::new(),
         seen: Mutex::new(None),
         seq_done: Mutex::new(HashSet::new()),
         file_counts: Mutex::new(HashMap::new()),
@@ -1301,6 +1318,7 @@ pub fn run() {
             trash_files,
             get_artwork,
             forget_artwork,
+            get_schedule,
             test_notification,
             open_default_apps,
             qbit_status,

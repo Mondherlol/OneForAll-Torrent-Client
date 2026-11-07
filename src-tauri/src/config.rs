@@ -91,10 +91,14 @@ fn config_path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    std::fs::read_to_string(config_path())
+    let mut cfg: Config = std::fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Toujours actifs (ce ne sont plus des options)
+    cfg.auto_sort = true;
+    cfg.manage_qbit = true;
+    cfg
 }
 
 pub fn save(cfg: &Config) -> Result<(), String> {

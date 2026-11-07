@@ -1,7 +1,7 @@
 <script>
   import Icon from "./Icon.svelte";
   import { KIND_LABEL, PLAYABLE, STATUS_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
-  import { arts, wantArt } from "./ui.svelte.js";
+  import { arts, wantArt, schedules, wantSchedule, airTime } from "./ui.svelte.js";
 
   let { group: g, sort, selected = false, onclick, ondblclick, onaction, oncontext } = $props();
 
@@ -13,6 +13,26 @@
   const running = $derived(incomplete.some((i) => !isPaused(i.status)));
   const installed = $derived(g.items.find((i) => i.installed)?.installed);
   const format = $derived(g.items.find((i) => i.format)?.format);
+
+  // Séries suivies récemment : prochain épisode (pastille « É9 · 19 h »)
+  const isShow = $derived(g.kind === "series" || g.kind === "anime");
+  const recent = $derived(Date.now() / 1000 - g.added_on < 120 * 86400);
+  $effect(() => {
+    if (isShow && recent) wantSchedule(g);
+  });
+  const nextAir = $derived.by(() => {
+    const s = isShow ? schedules[g.artKey] : null;
+    if (!s) return null;
+    const now = Date.now();
+    const owned = new Set(g.items.map((i) => i.episode).filter((n) => n != null));
+    const future = s.episodes.filter((e) => airTime(e) > now && !owned.has(e.number)).sort((a, b) => airTime(a) - airTime(b));
+    const ep = future[0] ?? (s.next && airTime(s.next) > now && !owned.has(s.next.number) ? s.next : null);
+    if (!ep) return null;
+    const d = airTime(ep) - now;
+    if (d > 8 * 86400000) return null;
+    const h = Math.round(d / 3600000);
+    return { n: ep.number, when: d < 3600000 ? `${Math.max(1, Math.round(d / 60000))} min` : h < 24 ? `${h} h` : `${Math.round(d / 86400000)} j` };
+  });
   const when = $derived(sort === "completed" ? fmtAgo(g.completion_on) : fmtAgo(g.added_on));
   // Lecture directe : seulement un film (ou un audio) seul. Pour une série, on choisit l'épisode.
 
@@ -114,6 +134,9 @@
 
     {#if g.dlspeed > 0}
       <span class="live"><Icon name="down" size={11} />{fmtSpeed(g.dlspeed)}</span>
+    {/if}
+    {#if nextAir && !g.dlspeed}
+      <span class="next-ep" title="Prochain épisode"><Icon name="calendar" size={11} />É{nextAir.n} · {nextAir.when}</span>
     {/if}
     {#if installed}
       <div class="installed-band" title="Installé : {installed.name}"><Icon name="check" size={13} />Installé</div>
@@ -261,6 +284,7 @@
   .card:hover .cbtn { opacity: 1; scale: 1; }
   .cbtn:hover { scale: 1.08 !important; }
 
+  .next-ep { position: absolute; left: 8px; bottom: 12px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: var(--accent); color: white; font-size: 11px; font-weight: 700; box-shadow: 0 4px 12px rgb(0 0 0 / 0.3); }
   .installed-band {
     position: absolute;
     left: 0;

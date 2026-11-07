@@ -85,7 +85,7 @@ fn query_of(title: &str) -> String {
 }
 
 /// « Sousou no Frieren 2nd Season » → « Sousou no Frieren »
-fn strip_season(q: &str) -> String {
+pub fn strip_season(q: &str) -> String {
     let re = regex::Regex::new(r"(?i)\s*(\d+(st|nd|rd|th)(\s+season)?|season\s*\d+|saison\s*\d+|s\d{1,2}|part\s*\d+|cour\s*\d+)\s*$").unwrap();
     re.replace(q, "").trim().to_string()
 }

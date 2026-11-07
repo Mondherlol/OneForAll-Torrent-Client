@@ -77,6 +77,7 @@
   let settingsTab = $state("general");
   let compact = $state(false);
   let addOpen = $state(false);
+  let addInit = $state(null); // { query, source, prefer, code } pour une recherche préremplie
   let globalPause = $state(false); // bandeau seulement après « Tout mettre en pause »
   let dragging = $state(false);
   let searchEl, mainEl;
@@ -276,6 +277,12 @@
       if (action === "play") return await startPlay(target);
       if (action === "share") return await share(target);
       if (action === "move") return await moveTo(target);
+      if (action === "searchEpisode") {
+        // Recherche préremplie pour un épisode sorti (depuis le calendrier d'une série)
+        addInit = target;
+        addOpen = true;
+        return;
+      }
       if (action === "removeMenu") {
         // Supprimer le « parent » = supprimer tous les torrents du groupe
         const { e, items } = target;
@@ -759,7 +766,7 @@
 {/if}
 
 {#if addOpen}
-  <AddTorrent {torrents} onclose={() => (addOpen = false)} onadded={onStaged} />
+  <AddTorrent {torrents} initial={addInit} onclose={() => ((addOpen = false), (addInit = null))} onadded={onStaged} />
 {/if}
 
 {#if staged.length && !pickHidden}

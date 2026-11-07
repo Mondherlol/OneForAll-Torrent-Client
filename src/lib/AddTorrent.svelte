@@ -1,12 +1,13 @@
 <script>
   import { fade, fly } from "svelte/transition";
+  import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import { openUrl, previewTorrent, searchTorrents, stageTorrents } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, wantArt } from "./ui.svelte.js";
 
-  let { torrents, onclose, onadded } = $props();
+  let { torrents, onclose, onadded, initial = null } = $props();
 
   const TABS = [
     { id: "search", label: "Rechercher", icon: "search" },
@@ -117,7 +118,11 @@
   const collator = new Intl.Collator("fr", { numeric: true, sensitivity: "base" });
   const shown = $derived.by(() => {
     let list = (results ?? []).filter(
-      (r) => (kindF === "all" || r.kind === kindF) && (source !== "nyaa" || langF === "all" || r.lang === langF) && (!aliveOnly || r.seeders > 0),
+      (r) =>
+        (kindF === "all" || r.kind === kindF) &&
+        (source !== "nyaa" || langF === "all" || r.lang === langF) &&
+        (!aliveOnly || r.seeders > 0) &&
+        (!epCode || !epOnly || matchesEp(r.title)),
     );
     const cmp = {
       seeders: (a, b) => b.seeders - a.seeders,
@@ -126,8 +131,33 @@
       "size-asc": (a, b) => a.size - b.size,
       name: (a, b) => collator.compare(a.title, b.title),
     }[sortBy];
-    return [...list].sort(cmp);
+    // Les sorties de la même équipe que le dernier épisode passent en premier
+    return [...list].sort((a, b) => sameTeam(b) - sameTeam(a) || cmp(a, b));
   });
+
+  // ---------- recherche préremplie (épisode d'une série) ----------
+  let epCode = $state(null); // « S06E09 » ou « 09 »
+  let epOnly = $state(true);
+  let prefer = $state(null); // équipe de sortie du dernier épisode téléchargé
+  $effect(() => {
+    const init = initial;
+    if (!init) return;
+    // untrack : sinon chaque frappe dans le champ relancerait cette recherche
+    untrack(() => {
+      query = init.query;
+      source = init.source;
+      epCode = init.code ?? null;
+      prefer = init.prefer ?? null;
+      search();
+    });
+  });
+  const matchesEp = (title) => {
+    if (!epCode) return true;
+    if (/^S\d+E\d+$/i.test(epCode)) return title.toUpperCase().replace(/[^A-Z0-9]/g, "").includes(epCode.toUpperCase());
+    const n = String(+epCode);
+    return new RegExp(`(?:^|[\\s_\\-\\[(.E])0*${n}(?:v\\d)?(?=[\\s_\\-\\])\\.]|$)`, "i").test(title);
+  };
+  const sameTeam = (r) => !!prefer && r.title.toLowerCase().includes(prefer.toLowerCase());
 
   // ---------- affiches (chargées quand la ligne devient visible) ----------
   function lazyArt(node, r) {
@@ -205,6 +235,9 @@
             {/each}
           </div>
         {/if}
+        {#if epCode}
+          <label class="alive ep"><input type="checkbox" bind:checked={epOnly} />Seulement l'épisode {epCode}</label>
+        {/if}
         <label class="alive"><input type="checkbox" bind:checked={aliveOnly} />Avec sources</label>
       </div>
     {/if}
@@ -237,6 +270,7 @@
                     <span class="rmeta">
                       <span class="kb k-{r.kind}">{KIND_LABEL[r.kind] ?? "Autre"}</span>
                       {#if r.lang}<span class="lb">{r.lang.toUpperCase()}</span>{/if}
+                      {#if sameTeam(r)}<span class="team" title="Même équipe que ton dernier épisode">★ {prefer}</span>{/if}
                       <b class="seed" class:dead={r.seeders === 0}>↑ {r.seeders}</b>
                       <span>↓ {r.leechers}</span>
                       <span>{fmtSize(r.size)}</span>
@@ -386,6 +420,9 @@
   .chips button { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
   .chips button.on { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-sm); }
   .chips em { font-style: normal; font-size: 10.5px; opacity: 0.7; }
+  .team { font-size: 10.5px; font-weight: 800; padding: 1px 6px; border-radius: 5px; background: rgb(245 158 11 / 0.15); color: #d97706; }
+  .alive.ep { margin-left: auto; color: var(--accent); font-weight: 650; }
+  .alive.ep + .alive { margin-left: 0; }
   .alive { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); cursor: pointer; margin-left: auto; }
 
   /* squelette */

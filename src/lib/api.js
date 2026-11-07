@@ -36,3 +36,4 @@ export const openUrl = (url) => invoke("open_url", { url });
 export const setCustomIcon = (path) => invoke("set_custom_icon", { path });
 export const getCustomIcon = () => invoke("get_custom_icon");
 export const previewTorrent = (url) => invoke("preview_torrent", { url });
+export const getSchedule = (title, kind) => invoke("get_schedule", { title, kind });

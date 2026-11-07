@@ -128,18 +128,69 @@ pub async fn nyaa(client: &Client, query: &str) -> Result<Vec<SearchResult>, Str
     Ok(out)
 }
 
-/// Recherche Torznab (C411 et tout tracker compatible Prowlarr/Jackett).
-pub async fn torznab(client: &Client, base: &str, key: &str, query: &str, source: &'static str) -> Result<Vec<SearchResult>, String> {
-    if key.trim().is_empty() {
-        return Err("Ajoute ta clé API C411 dans Réglages → Général → Trackers.".into());
+/// Identifiants TMDB (série, film) correspondant à une recherche — pour retrouver TOUS les torrents
+/// d'une série chez un tracker, même quand leur nom ne contient pas les mots cherchés.
+pub async fn tmdb_ids(client: &Client, tmdb_key: &str, query: &str) -> (Option<i64>, Option<i64>) {
+    if tmdb_key.is_empty() {
+        return (None, None);
     }
+    let first = |kind: &'static str| async move {
+        let v: serde_json::Value = client
+            .get(format!("https://api.themoviedb.org/3/search/{kind}"))
+            .query(&[("api_key", tmdb_key), ("query", query), ("language", "fr-FR")])
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        v["results"][0]["id"].as_i64()
+    };
+    (first("tv").await, first("movie").await)
+}
+
+/// Recherche Torznab (C411 et tout tracker compatible Prowlarr/Jackett) : texte + série/film TMDB.
+pub async fn torznab(client: &Client, base: &str, key: &str, query: &str, source: &'static str, tmdb: (Option<i64>, Option<i64>)) -> Result<Vec<SearchResult>, String> {
+    if key.trim().is_empty() {
+        return Err("Ajoute ta clé API C411 dans Réglages → Général → Intégrations.".into());
+    }
+    let mut calls: Vec<Vec<(&str, String)>> = vec![vec![("t", "search".into()), ("q", query.into())]];
+    if let Some(id) = tmdb.0 {
+        calls.push(vec![("t", "tvsearch".into()), ("tmdbid", id.to_string())]);
+    }
+    if let Some(id) = tmdb.1 {
+        calls.push(vec![("t", "movie".into()), ("tmdbid", id.to_string())]);
+    }
+    let mut all: Vec<SearchResult> = Vec::new();
+    let mut first_err = None;
+    for params in calls {
+        match torznab_once(client, base, key, params, source).await {
+            Ok(list) => {
+                for r in list {
+                    if !all.iter().any(|x| x.url == r.url || (!r.hash.is_empty() && x.hash == r.hash)) {
+                        all.push(r);
+                    }
+                }
+            }
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    if all.is_empty() {
+        if let Some(e) = first_err {
+            return Err(e);
+        }
+    }
+    all.sort_by(|a, b| b.seeders.cmp(&a.seeders));
+    Ok(all)
+}
+
+async fn torznab_once(client: &Client, base: &str, key: &str, mut params: Vec<(&str, String)>, source: &'static str) -> Result<Vec<SearchResult>, String> {
     let url = format!("{}/api", base.trim_end_matches('/'));
-    let res = client
-        .get(&url)
-        .query(&[("t", "search"), ("q", query), ("apikey", key.trim()), ("limit", "100")])
-        .send()
-        .await
-        .map_err(|e| format!("{source} injoignable : {e}"))?;
+    params.push(("apikey", key.trim().to_string()));
+    params.push(("limit", "100".into()));
+    let res = client.get(&url).query(&params).send().await.map_err(|e| format!("{source} injoignable : {e}"))?;
     let status = res.status();
     let xml = res.text().await.map_err(|e| e.to_string())?;
     if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN || xml.contains("<error") {

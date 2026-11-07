@@ -4,7 +4,7 @@
   import Files from "./Files.svelte";
   import Sources from "./Sources.svelte";
   import { KINDS, STATUS_LABEL, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
-  import { arts } from "./ui.svelte.js";
+  import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup } from "./ui.svelte.js";
 
   let { group: g, onclose, onaction, onitemmenu } = $props();
 
@@ -17,6 +17,51 @@
   // Lecture directe : seulement un film (un livre audio contient plein de fichiers → on choisit dans la liste)
   const canPlay = $derived(g.kind === "film" && single && g.items[0].progress > 0);
   const isShow = $derived(g.kind === "series" || g.kind === "anime");
+
+  // ---------- calendrier de diffusion ----------
+  $effect(() => wantSchedule(g));
+  const sched = $derived(isShow ? schedules[g.artKey] : null);
+  let now = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => (now = Date.now()), 30000);
+    return () => clearInterval(id);
+  });
+  const curSeason = $derived(Math.max(0, ...g.items.map((i) => i.season ?? 0)));
+  // Épisodes de la saison en cours (AniList : saison 0 = « en cours »)
+  const seasonEps = $derived(sched ? sched.episodes.filter((e) => e.season === 0 || e.season === (curSeason || 1)) : []);
+  const ownedNums = $derived(new Set(g.items.filter((i) => (i.season ?? curSeason) === curSeason && i.episode != null).map((i) => i.episode)));
+  const nextEp = $derived.by(() => {
+    if (!sched) return null;
+    // Prochain épisode pas encore téléchargé (certaines équipes sortent un épisode en avance)
+    const future = seasonEps.filter((e) => airTime(e) > now && !ownedNums.has(e.number)).sort((a, b) => airTime(a) - airTime(b));
+    if (future.length) return future[0];
+    const n = sched.next;
+    return n && airTime(n) > now && !ownedNums.has(n.number) ? n : null;
+  });
+  // Liste : épisodes téléchargés + épisodes sortis manquants + prochain épisode (en pointillés)
+  const rows = $derived.by(() => {
+    const r = g.items.map((it) => ({ key: it.hash, type: "item", it, s: it.season ?? 0, n: it.episode ?? 9999 }));
+    if (!isShow || !sched || !ownedNums.size) return r;
+    const minOwned = Math.min(...ownedNums);
+    for (const ep of seasonEps) {
+      if (ownedNums.has(ep.number) || ep.number < minOwned) continue;
+      const t = airTime(ep);
+      if (t && t <= now) r.push({ key: `m${ep.number}`, type: "missing", ep, s: curSeason, n: ep.number });
+    }
+    if (nextEp && !ownedNums.has(nextEp.number)) r.push({ key: `n${nextEp.number}`, type: "next", ep: nextEp, s: curSeason, n: nextEp.number });
+    return r.sort((a, b) => a.s - b.s || a.n - b.n);
+  });
+  const missingCount = $derived(rows.filter((r) => r.type === "missing").length);
+
+  /** Recherche préremplie pour un épisode : même titre, même format de numéro, même équipe mise en avant. */
+  function searchEp(n) {
+    const latest = g.items[g.items.length - 1];
+    const pad = (x) => String(x).padStart(2, "0");
+    const usesSE = /S\d+E\d+/i.test(latest.name);
+    const code = usesSE ? `S${pad(curSeason || 1)}E${pad(n)}` : pad(n);
+    const source = latest.name.trim().startsWith("[") ? "nyaa" : g.kind === "anime" && !/MULTI|VFF|VOSTFR|FRENCH/i.test(latest.name) ? "nyaa" : "c411";
+    onaction("searchEpisode", { query: `${latest.title} ${code}`, source, prefer: releaseGroup(latest.name), code });
+  }
   const isVideo = $derived(g.kind === "film" || isShow);
   // Groupe : dossier commun ; torrent seul : son contenu
   const location = $derived(single ? g.items[0].content_path || g.items[0].save_path : g.items[0].save_path);
@@ -130,6 +175,22 @@
     {/if}
   {/if}
 
+  {#if isShow && sched && (nextEp || missingCount)}
+    <!-- Diffusion : prochain épisode et épisodes sortis à télécharger -->
+    <div class="airing">
+      <Icon name="calendar" size={16} />
+      {#if nextEp}
+        <span class="ai-next">
+          <b>Prochain : É{nextEp.number}</b>{#if nextEp.name} « {nextEp.name} »{/if}
+          <em>{fmtAir(airTime(nextEp), now)} · {new Date(airTime(nextEp)).toLocaleString("fr-FR", { weekday: "short", hour: "2-digit", minute: "2-digit" })}</em>
+        </span>
+      {/if}
+      {#if missingCount}
+        <button class="ai-miss" onclick={() => (tab = "files")}>{missingCount} épisode{missingCount > 1 ? "s" : ""} sorti{missingCount > 1 ? "s" : ""} à récupérer</button>
+      {/if}
+    </div>
+  {/if}
+
   <!-- Onglets : contenu / sources -->
   <div class="tabs">
     <button class:on={tab === "files"} onclick={() => (tab = "files")}>
@@ -160,7 +221,24 @@
         <em>{fmtSize(g.size)}</em>
       </div>
       <ul class="eps">
-        {#each g.items as it (it.hash)}
+        {#each rows as row (row.key)}
+          {#if row.type !== "item"}
+            <!-- Épisode pas encore téléchargé : sorti (à chercher) ou à venir -->
+            {@const t = airTime(row.ep)}
+            <li class="ghost" class:upcoming={row.type === "next"}>
+              <span class="ep">{curSeason ? `S${curSeason} · ` : ""}É{row.ep.number}</span>
+              <div class="body">
+                <span class="name">{row.ep.name || `Épisode ${row.ep.number}`}</span>
+              </div>
+              <span class="meta"><em class:soon={row.type === "next"}>{fmtAir(t, now)}</em></span>
+              {#if row.type === "missing"}
+                <button class="sbtn primary" onclick={() => searchEp(row.ep.number)}><Icon name="search" size={13} />Chercher</button>
+              {:else}
+                <button class="sbtn" disabled title="Pas encore sorti"><Icon name="search" size={13} />Bientôt</button>
+              {/if}
+            </li>
+          {:else}
+          {@const it = row.it}
           {@const pct = Math.floor(it.progress * 1000) / 10}
           {@const done = it.progress >= 1}
           {@const paused = isPaused(it.status) && !done}
@@ -197,6 +275,7 @@
             {/if}
             <button class="mini" title="Plus d'actions" onclick={(e) => onitemmenu(e, it)}><Icon name="more" size={14} /></button>
           </li>
+          {/if}
         {/each}
       </ul>
       <p class="tip">Double-clic : lire · clic droit : actions sur l'épisode</p>
@@ -273,6 +352,17 @@
   .warn { margin: 10px 14px 0; padding: 9px 12px; border-radius: 10px; background: var(--err-soft); color: var(--err); font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .drawer > .pad { flex: 1; min-height: 0; padding: 12px 12px 14px; display: flex; flex-direction: column; }
 
+  /* diffusion */
+  .airing { display: flex; align-items: center; gap: 10px; margin: 10px 14px 0; padding: 9px 12px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); font-size: 12.5px; }
+  .ai-next { flex: 1; min-width: 0; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ai-next em { font-style: normal; margin-left: 6px; color: var(--accent); font-weight: 700; }
+  .ai-miss { flex: none; height: 26px; padding: 0 10px; border-radius: 999px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .eps li.ghost { border: 1.5px dashed var(--line-strong); background: none; }
+  .eps li.ghost:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .eps li.ghost .ep { background: none; border: 1.5px dashed var(--accent); }
+  .eps li.ghost .name { font-style: italic; color: var(--muted); }
+  .eps li.ghost.upcoming { opacity: 0.6; }
+  .eps li.ghost em.soon { color: var(--accent); background: var(--accent-soft); }
   .tabs { display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--line); }
   .tabs button { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
   .tabs button:hover { color: var(--text); }
