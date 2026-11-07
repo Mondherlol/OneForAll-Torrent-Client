@@ -153,6 +153,25 @@ pub fn set(app: &AppHandle, source: Option<String>) -> Result<Option<String>, St
     }
 }
 
+#[cfg(test)]
+mod tests {
+    /// Prépare l'icône personnalisée hors de l'app :
+    /// `ONEFORALL_ICON_SRC=image.png cargo test make_custom_icon -- --ignored`
+    #[test]
+    #[ignore]
+    fn make_custom_icon() {
+        let src = std::env::var("ONEFORALL_ICON_SRC").expect("ONEFORALL_ICON_SRC");
+        let img = image::open(src).unwrap();
+        let img = super::round_corners(super::trim_and_square(img).resize_exact(256, 256, super::FilterType::Lanczos3));
+        std::fs::create_dir_all(super::data_dir()).unwrap();
+        let mut png = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        std::fs::write(super::png_path(), &png).unwrap();
+        super::write_ico(&png, &super::ico_path()).unwrap();
+        println!("OK {}", super::png_path().display());
+    }
+}
+
 /// Icône personnalisée actuelle (PNG en base64), s'il y en a une.
 pub fn current() -> Option<String> {
     let png = std::fs::read(png_path()).ok()?;
