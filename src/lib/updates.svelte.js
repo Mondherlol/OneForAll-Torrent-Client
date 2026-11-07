@@ -10,6 +10,7 @@ export const upd = $state({
   progress: null, // 0..1 pendant le téléchargement
   error: null,
   checkedOnce: false,
+  lastCheck: 0,
 });
 
 let update = null;
@@ -27,6 +28,7 @@ export async function checkUpdates() {
   } finally {
     upd.checking = false;
     upd.checkedOnce = true;
+    upd.lastCheck = Date.now();
   }
   return upd.available;
 }

@@ -20,6 +20,38 @@ pub struct SearchResult {
     pub size: i64,
     pub trusted: bool,
     pub source: &'static str,
+    /// Remplis après la recherche : titre propre, type détecté, clé d'affiche, langue
+    pub clean: String,
+    pub kind: String,
+    pub art_key: String,
+    pub year: Option<u32>,
+    /// « fr », « en », « raw » ou « » (inconnu)
+    pub lang: String,
+    #[serde(skip)]
+    pub category_id: String,
+}
+
+static RE_FR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(vostfr|vf|vff|vf2|vfq|vfi|french|truefrench|subfrench|multi|fr)\b").unwrap());
+static RE_EN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(eng|english|vostEN|multi-?subs?)\b").unwrap());
+
+/// Complète un résultat : type et titre détectés comme pour un torrent, langue des sous-titres / audio.
+pub fn enrich(mut r: SearchResult) -> SearchResult {
+    let raw = crate::qbit::RawTorrent { name: r.title.clone(), ..Default::default() };
+    let m = crate::media::Media::from_raw(raw);
+    r.clean = m.title.clone();
+    r.kind = m.kind.as_str().to_string();
+    r.art_key = m.group_key.clone();
+    r.year = m.year;
+    r.lang = if r.source == "c411" || RE_FR.is_match(&r.title) {
+        "fr".into()
+    } else if r.category_id.ends_with("_4") {
+        "raw".into()
+    } else if r.category_id.ends_with("_2") || RE_EN.is_match(&r.title) {
+        "en".into()
+    } else {
+        String::new()
+    };
+    r
 }
 
 static RE_ITEM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<item>(.*?)</item>").unwrap());
@@ -81,9 +113,16 @@ pub async fn nyaa(client: &Client, query: &str) -> Result<Vec<SearchResult>, Str
                 size: parse_size(&tag(b, "nyaa:size")),
                 trusted: tag(b, "nyaa:trusted") == "Yes",
                 source: "nyaa",
+                clean: String::new(),
+                kind: String::new(),
+                art_key: String::new(),
+                year: None,
+                lang: String::new(),
+                category_id: tag(b, "nyaa:categoryId"),
             }
         })
         .filter(|r| !r.url.is_empty())
+        .map(enrich)
         .collect();
     out.sort_by(|a, b| b.seeders.cmp(&a.seeders));
     Ok(out)
@@ -131,9 +170,16 @@ pub async fn torznab(client: &Client, base: &str, key: &str, query: &str, source
                 size: tag(b, "size").parse().unwrap_or_else(|_| num("size")),
                 trusted: false,
                 source,
+                clean: String::new(),
+                kind: String::new(),
+                art_key: String::new(),
+                year: None,
+                lang: String::new(),
+                category_id: String::new(),
             }
         })
         .filter(|r| !r.url.is_empty())
+        .map(enrich)
         .collect();
     out.sort_by(|a, b| b.seeders.cmp(&a.seeders));
     Ok(out)

@@ -44,6 +44,11 @@
     }
   }
 
+  // Vérifie les mises à jour à l'ouverture des Réglages (si la dernière vérification date de plus de 10 min)
+  $effect(() => {
+    if (!upd.checking && Date.now() - (upd.lastCheck ?? 0) > 10 * 60 * 1000) checkUpdates();
+  });
+
   // Icône personnalisée (sur ce PC)
   let customIcon = $state(null);
   $effect(() => {
@@ -191,20 +196,20 @@
       <button class:on={tab === t.id} onclick={() => (tab = t.id)}><Icon name={t.icon} size={16} />{t.label}</button>
     {/each}
 
-    <!-- Version et mises à jour, en bas à gauche -->
+    <!-- Version et mises à jour : une ligne, vérification automatique à l'ouverture -->
     <div class="about">
-      <span class="ver">OneForAll <b>v{upd.current}</b></span>
+      <span class="ver" title={upd.error ?? ""}>
+        v{upd.current}
+        {#if upd.checking}<i class="st">…</i>{:else if upd.available}<i class="st new">nouvelle version</i>{:else if upd.error}<i class="st bad">hors ligne</i>{:else if upd.checkedOnce}<i class="st ok">à jour</i>{/if}
+      </span>
       {#if upd.available}
-        <button class="upd hot" disabled={upd.progress != null} onclick={installUpdate}>
-          <Icon name="down" size={14} />
-          {upd.progress != null ? `Installation… ${Math.round((upd.progress ?? 0) * 100)} %` : `v${upd.available.version} disponible`}
+        <button class="upd hot" disabled={upd.progress != null} onclick={installUpdate} title="Installer la v{upd.available.version}">
+          <Icon name="down" size={13} />{upd.progress != null ? `${Math.round((upd.progress ?? 0) * 100)} %` : `v${upd.available.version}`}
         </button>
       {:else}
-        <button class="upd" disabled={upd.checking} onclick={() => checkUpdates().then((a) => !a && !upd.error && flash("OneForAll est à jour"))}>
-          <Icon name="refresh" size={13} />{upd.checking ? "Vérification…" : "Rechercher une mise à jour"}
+        <button class="upd ico" class:spinning={upd.checking} disabled={upd.checking} title="Rechercher une mise à jour" onclick={() => checkUpdates().then((a) => !a && !upd.error && flash("OneForAll est à jour"))}>
+          <Icon name="refresh" size={13} />
         </button>
-        {#if upd.checkedOnce && !upd.error && !upd.checking}<span class="ok">À jour ✓</span>{/if}
-        {#if upd.error}<span class="err" title={upd.error}>Vérification impossible</span>{/if}
       {/if}
     </div>
   </nav>
@@ -213,98 +218,87 @@
     <button class="icon-btn close" title="Fermer (Échap)" onclick={onclose}><Icon name="close" size={16} /></button>
 
     {#if tab === "general"}
-      <h3>Apparence</h3>
-      <div class="seg big">
-        <button class:on={prefs.theme === "light"} onclick={() => (prefs.theme = "light")}><Icon name="sun" size={15} />Clair</button>
-        <button class:on={prefs.theme === "dark"} onclick={() => (prefs.theme = "dark")}><Icon name="moon" size={15} />Sombre</button>
+      <!-- Apparence -->
+      <div class="card">
+        <h3><Icon name="sun" size={15} />Apparence</h3>
+        <div class="srow">
+          <span class="sl">Thème</span>
+          <div class="seg">
+            <button class:on={prefs.theme === "light"} onclick={() => (prefs.theme = "light")}><Icon name="sun" size={14} />Clair</button>
+            <button class:on={prefs.theme === "dark"} onclick={() => (prefs.theme = "dark")}><Icon name="moon" size={14} />Sombre</button>
+          </div>
+        </div>
+        <div class="srow">
+          <span class="sl">Icône de l'app <i class="info" title="N'importe quelle image : bords unis retirés, recadrée en carré. Reste uniquement sur ce PC (fenêtre, barre des tâches, raccourcis).">i</i></span>
+          <div class="ctl">
+            {#if customIcon}<img class="icon-prev" src={customIcon} alt="" />{/if}
+            <button class="btn sm" onclick={pickIcon}><Icon name="image" size={14} />Choisir…</button>
+            {#if customIcon}<button class="btn sm" title="Icône d'origine" onclick={resetIcon}><Icon name="refresh" size={13} /></button>{/if}
+          </div>
+        </div>
       </div>
 
-      <h3>Icône de l'app (sur ce PC)</h3>
-      <p class="hint">Mets l'image que tu veux : les bords unis sont retirés et elle est recadrée en carré. Elle reste uniquement sur ce PC (fenêtre, barre des tâches, raccourcis).</p>
-      <div class="row icon-row">
-        {#if customIcon}<img class="icon-prev" src={customIcon} alt="" />{/if}
-        <button class="btn" onclick={pickIcon}><Icon name="image" size={15} />Choisir une image…</button>
-        {#if customIcon}<button class="btn" onclick={resetIcon}>Icône d'origine</button>{/if}
-      </div>
-
-      <h3>Limites de vitesse</h3>
-      <p class="hint">0 = illimité. S'applique tout de suite à qBittorrent.</p>
-      <div class="limits">
-        <label>
-          <span><Icon name="down" size={14} />Téléchargement</span>
-          <div class="unit"><input type="number" min="0" step="0.5" bind:value={dl} onchange={applyLimits} /><em>Mo/s</em></div>
-        </label>
-        <label>
-          <span><Icon name="up" size={14} />Envoi</span>
-          <div class="unit"><input type="number" min="0" step="0.5" bind:value={up} onchange={applyLimits} /><em>Mo/s</em></div>
-        </label>
-      </div>
-      <div class="presets">
-        {#each [0, 1, 5, 10, 25, 50] as v}
-          <button class="chip-sm" class:on={+dl === v} onclick={() => ((dl = v), applyLimits())}>{v ? `${v} Mo/s` : "Illimité"}</button>
-        {/each}
+      <!-- Vitesse -->
+      <div class="card">
+        <h3><Icon name="gauge" size={15} />Vitesse <i class="info" title="0 = illimité. S'applique tout de suite à qBittorrent.">i</i></h3>
+        <div class="limits">
+          <label><Icon name="down" size={14} /><div class="unit"><input type="number" min="0" step="0.5" bind:value={dl} onchange={applyLimits} /><em>Mo/s</em></div></label>
+          <label><Icon name="up" size={14} /><div class="unit"><input type="number" min="0" step="0.5" bind:value={up} onchange={applyLimits} /><em>Mo/s</em></div></label>
+        </div>
+        <div class="presets">
+          {#each [0, 1, 5, 10, 25, 50] as v}
+            <button class="chip-sm" class:on={+dl === v} onclick={() => ((dl = v), applyLimits())}>{v ? `${v} Mo/s` : "∞"}</button>
+          {/each}
+        </div>
       </div>
 
       {#if settings}
-        <h3>Automatisations</h3>
-        <label class="switch-row">
-          <div>
-            <b>Rangement automatique</b>
-            <span>Chaque nouveau torrent sans catégorie reçoit celle de son type (Films, Séries, Jeux…) et part dans le bon dossier.</span>
-          </div>
-          <input type="checkbox" class="switch" bind:checked={settings.auto_sort} onchange={save} />
-        </label>
-        <label class="switch-row">
-          <div>
-            <b>Désactiver le partage (seed)</b>
-            <span>Les torrents s'arrêtent dès la fin du téléchargement, et ceux déjà terminés ne sont plus partagés. Attention au ratio sur les trackers privés.</span>
-          </div>
-          <input type="checkbox" class="switch" checked={!seeding} onchange={(e) => toggleSeed(!e.currentTarget.checked)} />
-        </label>
-        <label class="switch-row">
-          <div>
-            <b>Séparer animés et séries</b>
-            <span>Activé : deux catégories (Animés / Séries). Désactivé : les animés sont rangés et affichés comme des séries.</span>
-          </div>
-          <input type="checkbox" class="switch" bind:checked={settings.split_anime} onchange={save} />
-        </label>
-        <label class="switch-row">
-          <div>
-            <b>Lancer et quitter qBittorrent avec OneForAll</b>
-            <span>Ouvrir OneForAll démarre qBittorrent (réduit). La croix réduit seulement OneForAll dans la zone de notification ; « Quitter » (clic droit sur son icône) ferme aussi qBittorrent.</span>
-          </div>
-          <input type="checkbox" class="switch" bind:checked={settings.manage_qbit} onchange={save} />
-        </label>
-
-        <h3>Trackers</h3>
-        <p class="hint">
-          Clé API C411 (droit « Torznab/RSS (lecture) ») pour chercher sur C411 depuis le bouton +. Elle reste uniquement sur ce PC.
-          À créer sur c411.org → Intégrations API.
-        </p>
-        <div class="row">
-          <input class="text" type="password" placeholder="Clé API C411" bind:value={settings.c411_key} spellcheck="false" autocomplete="off" />
-          <button class="btn" onclick={save}>Enregistrer</button>
+        <!-- Téléchargements -->
+        <div class="card">
+          <h3><Icon name="down" size={15} />Téléchargements</h3>
+          <label class="srow">
+            <span class="sl"><Icon name="folder" size={14} />Rangement automatique <i class="info" title="Chaque nouveau torrent reçoit la catégorie de son type (Films, Séries, Jeux…) et part dans le bon dossier.">i</i></span>
+            <input type="checkbox" class="switch" bind:checked={settings.auto_sort} onchange={save} />
+          </label>
+          <label class="srow">
+            <span class="sl"><Icon name="up" size={14} />Désactiver le partage (seed) <i class="info" title="Les torrents s'arrêtent dès la fin du téléchargement. Attention au ratio sur les trackers privés.">i</i></span>
+            <input type="checkbox" class="switch" checked={!seeding} onchange={(e) => toggleSeed(!e.currentTarget.checked)} />
+          </label>
+          <label class="srow">
+            <span class="sl"><Icon name="anime" size={14} />Séparer animés et séries <i class="info" title="Désactivé : les animés sont rangés et affichés comme des séries.">i</i></span>
+            <input type="checkbox" class="switch" bind:checked={settings.split_anime} onchange={save} />
+          </label>
+          <label class="srow">
+            <span class="sl"><Icon name="layers" size={14} />Lancer et quitter qBittorrent avec l'app <i class="info" title="La croix réduit seulement OneForAll près de l'horloge ; « Quitter » (clic droit sur l'icône) ferme aussi qBittorrent.">i</i></span>
+            <input type="checkbox" class="switch" bind:checked={settings.manage_qbit} onchange={save} />
+          </label>
         </div>
 
-        <h3>Ouverture des torrents</h3>
-        <div class="row">
-          <p class="hint inline">Les fichiers .torrent s'ouvrent dans OneForAll. Pour les liens magnet, Windows demande une fois : choisis OneForAll.</p>
-          <span class="spacer"></span>
-          <button class="btn" onclick={() => openDefaultApps().catch((e) => flash(String(e)))}>Régler les liens magnet…</button>
-        </div>
-
-        <h3>Notifications</h3>
-        <div class="row">
-          <p class="hint inline">Une notification Windows (avec l'affiche) s'affiche à la fin de chaque téléchargement.</p>
-          <span class="spacer"></span>
-          <button class="btn" onclick={() => testNotification().catch((e) => flash(String(e)))}>Tester la notification</button>
-        </div>
-
-        <h3>Affiches</h3>
-        <p class="hint">Une clé TMDB est déjà intégrée à OneForAll. Tu peux mettre la tienne ici (facultatif), elle sera utilisée à la place.</p>
-        <div class="row">
-          <input class="text" type="password" placeholder="Clé API TMDB personnelle (facultatif)" bind:value={settings.tmdb_key} spellcheck="false" autocomplete="off" />
-          <button class="btn" onclick={save}>Enregistrer</button>
+        <!-- Intégrations -->
+        <div class="card">
+          <h3><Icon name="link" size={15} />Intégrations</h3>
+          <div class="srow">
+            <span class="sl">C411 <i class="info" title="Clé API (droit « Torznab/RSS (lecture) ») pour chercher sur C411 depuis le bouton +. À créer sur c411.org → Intégrations API. Reste sur ce PC.">i</i></span>
+            <div class="ctl grow">
+              <input class="text" type="password" placeholder="Clé API C411" bind:value={settings.c411_key} spellcheck="false" autocomplete="off" />
+              <button class="btn sm" onclick={save}><Icon name="check" size={13} /></button>
+            </div>
+          </div>
+          <div class="srow">
+            <span class="sl">TMDB <i class="info" title="Facultatif : une clé est déjà intégrée. La tienne sera utilisée à la place.">i</i></span>
+            <div class="ctl grow">
+              <input class="text" type="password" placeholder="Clé personnelle (facultatif)" bind:value={settings.tmdb_key} spellcheck="false" autocomplete="off" />
+              <button class="btn sm" onclick={save}><Icon name="check" size={13} /></button>
+            </div>
+          </div>
+          <div class="srow">
+            <span class="sl">Liens magnet <i class="info" title="Les .torrent s'ouvrent déjà dans OneForAll. Pour les liens magnet, Windows demande une fois : choisis OneForAll.">i</i></span>
+            <button class="btn sm" onclick={() => openDefaultApps().catch((e) => flash(String(e)))}><Icon name="open" size={13} />Régler…</button>
+          </div>
+          <div class="srow">
+            <span class="sl">Notifications <i class="info" title="Une notification Windows avec l'affiche à la fin de chaque téléchargement.">i</i></span>
+            <button class="btn sm" onclick={() => testNotification().catch((e) => flash(String(e)))}><Icon name="alert" size={13} />Tester</button>
+          </div>
         </div>
       {/if}
     {:else if tab === "folders"}
@@ -441,14 +435,35 @@
   nav button.on { background: var(--accent-soft); color: var(--accent); }
   .icon-row { gap: 10px; }
   .icon-prev { width: 44px; height: 44px; border-radius: 10px; box-shadow: var(--shadow-sm); }
-  .about { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 4px; border-top: 1px solid var(--line); }
-  .ver { font-size: 12px; color: var(--muted); }
-  .ver b { color: var(--text); }
-  nav .upd { justify-content: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line-strong); background: var(--surface); font-size: 12px; font-weight: 650; }
+  /* version + mise à jour : une seule ligne compacte */
+  .about { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 10px 6px 2px 10px; border-top: 1px solid var(--line); }
+  .ver { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .st { font-style: normal; font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+  .st.ok { background: rgb(16 185 129 / 0.12); color: var(--ok); }
+  .st.new { background: var(--accent-soft); color: var(--accent); }
+  .st.bad { background: var(--err-soft); color: var(--err); }
+  nav .upd { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface); font-size: 11.5px; font-weight: 700; color: var(--text-2); }
+  nav .upd.ico { width: 26px; padding: 0; justify-content: center; }
   nav .upd:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   nav .upd.hot { background: var(--accent); border-color: var(--accent); color: white; }
-  .about .ok { font-size: 11.5px; color: var(--ok); text-align: center; }
-  .about .err { font-size: 11.5px; color: var(--err); text-align: center; }
+  .upd.spinning :global(svg) { animation: spin 0.8s linear infinite; }
+
+  /* sections en cartes */
+  .card { margin-bottom: 14px; padding: 6px 14px 8px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
+  .card h3 { display: flex; align-items: center; gap: 8px; margin: 8px 0 6px; font-size: 12px; color: var(--text-2); }
+  .srow { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 42px; padding: 4px 0; border-top: 1px solid var(--line); cursor: default; }
+  label.srow { cursor: pointer; }
+  .card h3 + .srow { border-top: 0; }
+  .sl { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 550; color: var(--text); }
+  .ctl { display: flex; align-items: center; gap: 6px; }
+  .ctl.grow { flex: 1; max-width: 380px; }
+  .info { display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; border: 1.5px solid var(--line-strong); font-style: normal; font-size: 9.5px; font-weight: 800; color: var(--muted); cursor: help; }
+  .info:hover { border-color: var(--accent); color: var(--accent); }
+  :global(.btn.sm) { height: 30px; padding: 0 10px; font-size: 12.5px; }
+  .card .limits { grid-template-columns: 1fr 1fr; margin: 4px 0 2px; }
+  .card .limits label { flex-direction: row; align-items: center; gap: 10px; color: var(--muted); }
+  .card .limits .unit { flex: 1; }
+  .card .presets { margin: 8px 0 6px; }
   section { flex: 1; overflow-y: auto; padding: 26px 32px 32px; position: relative; }
   .close { position: absolute; top: 16px; right: 16px; }
   h3 { margin: 22px 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }

@@ -142,6 +142,58 @@ pub fn infohash(data: &[u8]) -> Option<String> {
     }
 }
 
+/// Éléments d'une liste bencodée (plages de chaque valeur).
+fn list_items(d: &[u8]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if d.first() != Some(&b'l') {
+        return out;
+    }
+    let mut i = 1;
+    while d.get(i).is_some_and(|c| *c != b'e') {
+        let Some(end) = skip(d, i) else { break };
+        out.push((i, end));
+        i = end;
+    }
+    out
+}
+
+fn parse_int(d: &[u8]) -> Option<i64> {
+    std::str::from_utf8(d.strip_prefix(b"i")?.strip_suffix(b"e")?).ok()?.parse().ok()
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct TorrentEntry {
+    pub path: String,
+    pub size: i64,
+}
+
+/// Nom et liste des fichiers d'un .torrent, sans l'ajouter à qBittorrent.
+pub fn torrent_files(data: &[u8]) -> Option<(String, Vec<TorrentEntry>)> {
+    let (s, e) = info_span(data)?;
+    let info = &data[s..e];
+    let str_of = |r: (usize, usize), d: &[u8]| parse_str(&d[r.0..r.1]).map(|b| String::from_utf8_lossy(b).to_string());
+    let name = dict_get(info, b"name").and_then(|r| str_of(r, info)).unwrap_or_default();
+    let mut files = Vec::new();
+    if let Some((a, b)) = dict_get(info, b"files") {
+        let list = &info[a..b];
+        for (fa, fb) in list_items(list) {
+            let f = &list[fa..fb];
+            let size = dict_get(f, b"length").and_then(|(x, y)| parse_int(&f[x..y])).unwrap_or(0);
+            let path = dict_get(f, b"path")
+                .map(|(x, y)| {
+                    let p = &f[x..y];
+                    list_items(p).into_iter().filter_map(|r| str_of(r, p)).collect::<Vec<_>>().join("/")
+                })
+                .unwrap_or_default();
+            files.push(TorrentEntry { path, size });
+        }
+    } else {
+        let size = dict_get(info, b"length").and_then(|(x, y)| parse_int(&info[x..y])).unwrap_or(0);
+        files.push(TorrentEntry { path: name.clone(), size });
+    }
+    Some((name, files))
+}
+
 /// Identifiant d'un lien magnet (hexadécimal ou base32).
 pub fn magnet_hash(uri: &str) -> Option<String> {
     let lower = uri.to_lowercase();
@@ -225,6 +277,16 @@ fn info_span(d: &[u8]) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_list() {
+        let t = b"d4:infod5:filesld6:lengthi10e4:pathl2:S15:e.mkveed6:lengthi5e4:pathl5:a.nfoeee4:name4:Show12:piece lengthi1e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+        let (name, files) = torrent_files(t).unwrap();
+        assert_eq!(name, "Show");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "S1/e.mkv");
+        assert_eq!(files[0].size, 10);
+    }
 
     #[test]
     fn magnets() {

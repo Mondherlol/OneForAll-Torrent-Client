@@ -56,9 +56,9 @@
 
 <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
   {#if name === "anime"}
-    <!-- Drapeau du Japon -->
-    <rect x="2.5" y="5" width="19" height="14" rx="2" />
-    <circle cx="12" cy="12" r="3.6" fill="#e11d48" stroke="none" />
+    <!-- Katakana « ア » (a), au trait comme les autres icônes -->
+    <path d="M4.5 5.5 H19 Q18 9.5 13.5 12" />
+    <path d="M11.8 8.8 C12.2 13.5 10.4 17.6 6 20.5" />
   {:else}
     <path d={P[name] ?? P.other} />
   {/if}

@@ -370,6 +370,32 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
     }
 }
 
+#[derive(Serialize)]
+struct Preview {
+    name: String,
+    hash: Option<String>,
+    files: Vec<scan::TorrentEntry>,
+    total: i64,
+}
+
+/// Aperçu d'un résultat de recherche : liste des fichiers du .torrent, sans l'ajouter.
+#[tauri::command]
+async fn preview_torrent(url: String) -> Result<Preview, String> {
+    if !url.starts_with("http") {
+        return Err("Aperçu impossible pour un lien magnet (les fichiers ne sont connus qu'après ajout).".into());
+    }
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let res = client.get(&url).send().await.map_err(|e| format!("Téléchargement impossible : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Le site a répondu {}", res.status()));
+    }
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    let (name, mut files) = scan::torrent_files(&bytes).ok_or("Ce fichier n'est pas un .torrent valide")?;
+    files.sort_by(|a, b| nat_cmp(&a.path, &b.path));
+    let total = files.iter().map(|f| f.size).sum();
+    Ok(Preview { name, hash: scan::infohash(&bytes), files, total })
+}
+
 #[derive(Serialize, Clone)]
 struct Staged {
     /// Torrents ajoutés SANS démarrer : l'interface propose de choisir les fichiers, puis les lance
@@ -1257,6 +1283,7 @@ pub fn run() {
             set_location,
             search_torrents,
             stage_torrents,
+            preview_torrent,
             uninstall_program,
             run_setup,
             reveal,

@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.2.5"
+version = "0.2.6"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
