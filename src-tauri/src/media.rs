@@ -131,6 +131,10 @@ static RE_SOFT: LazyLock<Regex> = LazyLock::new(|| {
 static RE_ANIME: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)\b(adn|crunchyroll|wakanim|tsundere(-raws)?|erai-raws|subsplease|horriblesubs|judas|anime|animes)\b|^\s*\[[^\]]+\]")
 });
+/// Titre qui se termine par un numéro d'épisode (2 à 4 chiffres) : « One Piece 1180 », « Frieren - 12 »
+static RE_ABS_EP: LazyLock<Regex> = LazyLock::new(|| re(r"^(.*?\S)\s*(?:-\s*|#|\bE|\bEp\.?\s?|\bEpisode\s)?(\d{2,4})(?:v\d)?$"));
+/// « Episode 12 », « Ep 12 », « E12 » n'importe où dans le nom
+static RE_EP_WORD: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)\b(?:episode|ep\.?)\s?(\d{1,4})\b"));
 static RE_SERIES_WORDS: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)\b(int[eé]grale|saison|season|complete series|batch)\b"));
 
@@ -263,15 +267,37 @@ impl Media {
 
     pub fn from_raw(t: RawTorrent) -> Self {
         let human = humanize(&RE_EXT.replace(&t.name, ""));
-        let kind = detect_kind(&t.name, &t.category);
-        let title = clean_title(&t.name);
+        let mut kind = detect_kind(&t.name, &t.category);
+        let mut title = clean_title(&t.name);
         let console_format = RE_CONSOLE_EXT.captures(&t.name).map(|c| c[1].to_uppercase());
         let console_platform = RE_SWITCH.is_match(&t.name).then(|| "Switch".to_string());
 
-        let (season, episode) = match RE_SE.captures(&human) {
+        let (season, mut episode): (Option<u32>, Option<u32>) = match RE_SE.captures(&human) {
             Some(c) => (c[1].parse().ok(), c[2].parse().ok()),
             None => (RE_S.captures(&human).and_then(|c| c[1].parse().ok()), None),
         };
+
+        // Numérotation absolue des animés : « One Piece - 1180 », « One Piece 1180 », « Ep 12 ».
+        // Le numéro sort du titre (sinon chaque épisode serait un titre différent, sans affiche).
+        if episode.is_none() && season.is_none() {
+            if let Some(c) = RE_ABS_EP.captures(&title) {
+                let n: u32 = c[2].parse().unwrap_or(0);
+                // Un film « Ocean's 11 (2001) » garde son nombre : on ne l'applique que si c'est déjà une série,
+                // si le numéro est précédé d'un tiret (« - 1180 »), ou s'il n'y a pas d'année dans le nom
+                let dash = c[0][c[1].len()..].contains('-');
+                let plausible = matches!(kind, Kind::Series | Kind::Anime) || dash || !RE_YEAR.is_match(&human);
+                if plausible && !(1900..=2099).contains(&n) && !matches!(kind, Kind::Game | Kind::Software | Kind::Book | Kind::Audio) {
+                    episode = Some(n);
+                    title = c[1].trim_end_matches(|ch: char| ch == '-' || ch.is_whitespace()).to_string();
+                }
+            } else if let Some(c) = RE_EP_WORD.captures(&human) {
+                episode = c[1].parse().ok();
+            }
+            if episode.is_some() && matches!(kind, Kind::Film | Kind::Other) {
+                // Un épisode n'est pas un film : série, ou animé si le nom en a les marques
+                kind = if RE_ANIME.is_match(&human) { Kind::Anime } else { Kind::Series };
+            }
+        }
         let year = RE_YEAR.captures(&human).and_then(|c| c[1].parse().ok());
         let quality = RE_RES.captures(&human).map(|c| match c[1].to_lowercase().as_str() {
             "2160p" | "4k" | "uhd" => "4K".to_string(),
@@ -360,6 +386,26 @@ mod tests {
             let x = m(name, cat);
             println!("{:<9} | {:<34} | {:<40} | {:?}", format!("{:?}", x.kind), x.title, x.group_key, x.tags);
         }
+    }
+
+    #[test]
+    fn absolute_episodes() {
+        for name in [
+            "[Erai-raws] One Piece - 1180 [1080p CR WEB-DL AVC AAC][MultiSub][ABCD1234]",
+            "One.Piece.1180.VOSTFR.1080p.WEB.x264-Tsundere-Raws",
+            "One Piece 1180 VOSTFR 1080p",
+        ] {
+            let x = m(name, "");
+            assert_eq!(x.title, "One Piece", "{name}");
+            assert_eq!(x.episode, Some(1180), "{name}");
+            assert!(matches!(x.kind, Kind::Series | Kind::Anime), "{name} → {:?}", x.kind);
+        }
+        // Tous les épisodes dans le même groupe
+        assert_eq!(m("One Piece 1179 VOSTFR 1080p", "").group_key, m("One Piece 1180 VOSTFR 1080p", "").group_key);
+        // Les films avec un nombre dans le titre restent des films
+        let o = m("Ocean's 11 (2001) MULTi 1080p BluRay", "");
+        assert_eq!((o.kind, o.title.as_str()), (Kind::Film, "Ocean's 11"));
+        assert_eq!(m("Deadpool 2 (2018) MULTi 2160p", "").kind, Kind::Film);
     }
 
     #[test]
