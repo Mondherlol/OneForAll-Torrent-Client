@@ -10,7 +10,7 @@
   import AddTorrent from "./lib/AddTorrent.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { listen } from "@tauri-apps/api/event";
-  import { stageTorrents } from "./lib/api.js";
+  import { stageTorrents, qbitStatus, setupQbit, openUrl } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -22,6 +22,25 @@
     return () => (clearTimeout(t), clearInterval(id));
   });
   let updDismissed = $state(false);
+
+  // ---------- qBittorrent pas encore relié ----------
+  let qstatus = $state(null);
+  let settingUp = $state(false);
+  $effect(() => {
+    if (error && !torrents.length && !booting) qbitStatus().then((s) => (qstatus = s)).catch(() => {});
+  });
+  async function autoSetup() {
+    settingUp = true;
+    try {
+      await setupQbit();
+      flash("qBittorrent est relié à OneForAll ✓");
+      await refresh();
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      settingUp = false;
+    }
+  }
 
   // Titre de la fenêtre : « OneForAll — Torrent Client v0.2.2 »
   $effect(() => {
@@ -653,11 +672,31 @@
         <div class="boot-bar"><span></span></div>
       </div>
     {:else if error && !torrents.length}
-      <div class="empty" in:fade>
-        <Icon name="alert" size={40} />
-        <h2>Connexion à qBittorrent impossible</h2>
-        <p>{error}</p>
-        <button class="btn" onclick={refresh}><Icon name="refresh" size={15} />Réessayer</button>
+      <div class="empty connect" in:fade>
+        {#if qstatus && !qstatus.installed}
+          <Icon name="down" size={40} />
+          <h2>qBittorrent n'est pas installé</h2>
+          <p>OneForAll s'appuie sur qBittorrent pour télécharger (il tourne en arrière-plan, invisible). Installe-le puis relance OneForAll.</p>
+          <div class="cbtns">
+            <button class="btn primary" onclick={() => openUrl("https://www.qbittorrent.org/download")}><Icon name="open" size={15} />Télécharger qBittorrent</button>
+            <button class="btn" onclick={refresh}><Icon name="refresh" size={15} />Réessayer</button>
+          </div>
+        {:else}
+          <Icon name="link" size={40} />
+          <h2>Relier qBittorrent à OneForAll</h2>
+          <p>
+            OneForAll parle à qBittorrent via son interface web, qui n'est pas encore activée.
+            Il peut la configurer pour toi : accès réservé à ce PC, identifiants générés automatiquement.
+            {#if qstatus?.running}<br /><b>qBittorrent va être redémarré</b> (tes téléchargements reprendront tout seuls).{/if}
+          </p>
+          <div class="cbtns">
+            <button class="btn primary" disabled={settingUp} onclick={autoSetup}>
+              {#if settingUp}<span class="spin"></span>Configuration…{:else}<Icon name="settings" size={15} />Configurer automatiquement{/if}
+            </button>
+            <button class="btn" disabled={settingUp} onclick={refresh}><Icon name="refresh" size={15} />Réessayer</button>
+          </div>
+          <small class="detail">{error}</small>
+        {/if}
       </div>
     {:else if loaded && !visible.length}
       <div class="empty" in:fade>
@@ -912,6 +951,11 @@
   .selbar .x { width: 32px; padding: 0; justify-content: center; }
 
   .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 12vh; color: var(--muted); text-align: center; }
+  .connect p { line-height: 1.55; max-width: 520px; }
+  .cbtns { display: flex; gap: 8px; }
+  .detail { margin-top: 10px; font-size: 11.5px; color: var(--muted); opacity: 0.7; }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgb(255 255 255 / 0.4); border-top-color: white; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .empty h2 { margin: 6px 0 0; color: var(--text); font-size: 20px; }
   .empty p { margin: 0 0 8px; max-width: 460px; }
 

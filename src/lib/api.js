@@ -30,3 +30,6 @@ export const setSeeding = (enabled) => invoke("set_seeding", { enabled });
 export const openDefaultApps = () => invoke("open_default_apps");
 export const stageTorrents = (urls = [], paths = []) => invoke("stage_torrents", { urls, paths });
 export const getSources = (hash) => invoke("get_sources", { hash });
+export const qbitStatus = () => invoke("qbit_status");
+export const setupQbit = () => invoke("setup_qbit");
+export const openUrl = (url) => invoke("open_url", { url });

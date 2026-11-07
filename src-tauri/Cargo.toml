@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.2.3"
+version = "0.2.4"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
@@ -30,6 +30,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_Wi
 tauri-winrt-notification = "0.8"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+pbkdf2 = { version = "0.13.0", features = ["hmac"] }
+base64 = "0.23.1"
+getrandom = "0.4.3"
 
 # Binaire final : petit et rapide
 [profile.release]

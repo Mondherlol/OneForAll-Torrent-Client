@@ -4,6 +4,7 @@ mod config;
 mod installed;
 mod media;
 mod qbit;
+mod qsetup;
 mod scan;
 mod search;
 
@@ -1034,6 +1035,61 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
     }
 }
 
+#[derive(Serialize)]
+struct QbitStatus {
+    installed: bool,
+    running: bool,
+    reachable: bool,
+    configured: bool,
+}
+
+/// Où en est qBittorrent ? (pour l'écran « relier qBittorrent »)
+#[tauri::command]
+async fn qbit_status(state: State<'_, AppState>) -> Result<QbitStatus, String> {
+    let cfg = state.cfg();
+    Ok(QbitStatus {
+        installed: qbit_exe(&cfg).is_some(),
+        running: qsetup::is_running(),
+        reachable: state.qbit.torrents().await.is_ok(),
+        configured: !cfg.password.is_empty(),
+    })
+}
+
+/// Configure qBittorrent pour OneForAll (Web UI locale + identifiants), puis le (re)lance.
+#[tauri::command]
+async fn setup_qbit(state: State<'_, AppState>) -> Result<(), String> {
+    let cfg = state.cfg();
+    let exe = qbit_exe(&cfg).ok_or("qBittorrent n'est pas installé")?;
+    let cfg = tauri::async_runtime::spawn_blocking(move || {
+        if qsetup::is_running() {
+            qsetup::close();
+        }
+        qsetup::configure(cfg)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    config::save(&cfg)?;
+    state.qbit.set_creds(&cfg);
+    *state.cfg.lock().unwrap() = cfg;
+    launch_qbit(&exe);
+    for _ in 0..60 {
+        if state.qbit.torrents().await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err("qBittorrent a été configuré mais ne répond pas encore. Réessaie dans un instant.".into())
+}
+
+/// Ouvre une page web (uniquement https) dans le navigateur.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("Adresse refusée".into());
+    }
+    explorer(format!("\"{url}\""))
+}
+
 /// Ouvre la page Windows « Applications par défaut » de OneForAll (pour les liens magnet).
 #[tauri::command]
 fn open_default_apps() -> Result<(), String> {
@@ -1154,6 +1210,15 @@ pub fn run() {
                 {
                     let st = handle.state::<AppState>();
                     let cfg = st.cfg();
+                    // Premier lancement : qBittorrent fermé et pas encore relié → on le configure en silence
+                    if cfg.manage_qbit && cfg.password.is_empty() && qbit_exe(&cfg).is_some() && !qsetup::is_running() {
+                        if let Ok(new_cfg) = qsetup::configure(cfg.clone()) {
+                            let _ = config::save(&new_cfg);
+                            st.qbit.set_creds(&new_cfg);
+                            *st.cfg.lock().unwrap() = new_cfg;
+                        }
+                    }
+                    let cfg = st.cfg();
                     if cfg.manage_qbit && !st.qbit.alive().await {
                         if let Some(exe) = qbit_exe(&cfg) {
                             launch_qbit(&exe);
@@ -1198,6 +1263,9 @@ pub fn run() {
             forget_artwork,
             test_notification,
             open_default_apps,
+            qbit_status,
+            setup_qbit,
+            open_url,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de OneForAll");

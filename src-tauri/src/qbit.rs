@@ -61,11 +61,17 @@ pub struct Category {
     pub save_path: String,
 }
 
-pub struct Qbit {
-    client: Client,
+#[derive(Clone)]
+struct Creds {
     url: String,
     username: String,
     password: String,
+}
+
+pub struct Qbit {
+    client: Client,
+    /// Modifiables à chaud (configuration automatique de qBittorrent)
+    creds: std::sync::RwLock<Creds>,
 }
 
 impl Qbit {
@@ -75,24 +81,33 @@ impl Qbit {
             .timeout(Duration::from_secs(8))
             .build()
             .expect("client HTTP");
-        Self {
+        let q = Self {
             client,
+            creds: std::sync::RwLock::new(Creds { url: String::new(), username: String::new(), password: String::new() }),
+        };
+        q.set_creds(cfg);
+        q
+    }
+
+    pub fn set_creds(&self, cfg: &Config) {
+        *self.creds.write().unwrap() = Creds {
             url: cfg.qbit_url.trim_end_matches('/').to_string(),
             username: cfg.username.clone(),
             password: cfg.password.clone(),
-        }
+        };
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.url, path)
+        format!("{}{}", self.creds.read().unwrap().url, path)
     }
 
     async fn login(&self) -> Result<(), String> {
+        let c = self.creds.read().unwrap().clone();
         let res = self
             .client
             .post(self.url("/api/v2/auth/login"))
-            .header("Referer", &self.url)
-            .form(&[("username", &self.username), ("password", &self.password)])
+            .header("Referer", &c.url)
+            .form(&[("username", &c.username), ("password", &c.password)])
             .send()
             .await
             .map_err(net_err)?;
