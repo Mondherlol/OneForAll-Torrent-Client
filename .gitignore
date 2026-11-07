@@ -1,0 +1,21 @@
+# Dépendances et fichiers générés
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Réglages propres à une machine (dossier de compilation hors OneDrive…)
+src-tauri/.cargo/
+
+# Secrets : jamais dans le dépôt
+.env
+.env.*
+*.key
+*.key.pub
+
+# Divers
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
