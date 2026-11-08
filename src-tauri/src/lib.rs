@@ -555,6 +555,12 @@ fn overlay_action(action: String) {
     player::overlay_action(&action);
 }
 
+/// Ce qu'affiche la fenêtre « Épisode suivant » (épisode, série, affiche, durée du compte à rebours).
+#[tauri::command]
+fn overlay_data() -> Option<serde_json::Value> {
+    player::overlay_data()
+}
+
 /// Vu / en cours pour chaque fichier (clé = chemin demandé).
 #[tauri::command]
 fn get_watch(state: State<'_, AppState>, paths: Vec<String>) -> HashMap<String, watch::Watch> {
@@ -805,6 +811,26 @@ fn find_vlc() -> Option<PathBuf> {
 #[tauri::command]
 async fn play(app: tauri::AppHandle, state: State<'_, AppState>, hashes: Vec<String>) -> Result<usize, String> {
     let ts = state.qbit.torrents().await?;
+    let mut hashes = hashes;
+    // Un seul épisode d'une série en plusieurs torrents : les épisodes suivants déjà téléchargés
+    // passent à la suite (pour la fenêtre « Épisode suivant »)
+    if let [h] = hashes.as_slice() {
+        if let Some(me) = ts.iter().find(|t| &t.hash == h).map(|t| Media::from_raw(t.clone())) {
+            if let Some(ep) = me.episode {
+                let order = |m: &Media| (m.season.unwrap_or(0), m.episode.unwrap_or(0));
+                let mut next: Vec<(u32, u32, String)> = ts
+                    .iter()
+                    .filter(|t| t.hash != me.hash && t.progress >= 0.999)
+                    .map(|t| Media::from_raw(t.clone()))
+                    .filter(|m| m.group_key == me.group_key && m.episode.is_some() && order(m) > (me.season.unwrap_or(0), ep))
+                    .map(|m| (m.season.unwrap_or(0), m.episode.unwrap_or(0), m.hash.clone()))
+                    .collect();
+                next.sort();
+                next.dedup_by_key(|x| (x.0, x.1));
+                hashes.extend(next.into_iter().map(|x| x.2));
+            }
+        }
+    }
     let mut complete = Vec::new();
     let mut partial = Vec::new();
     for h in &hashes {
@@ -1668,6 +1694,7 @@ pub fn run() {
             get_watch,
             play_files,
             overlay_action,
+            overlay_data,
             set_watched,
             add_downloads,
             download_action,

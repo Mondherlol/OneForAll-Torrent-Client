@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Manager;
 
@@ -83,22 +83,37 @@ pub fn overlay_action(action: &str) {
     *ACTION.lock().unwrap() = Some(action.to_string());
 }
 
-fn enc(s: &str) -> String {
-    s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect()
+/// Ce qu'affiche la fenêtre (elle le demande au démarrage : commande `overlay_data`)
+static OVERLAY_DATA: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+pub fn overlay_data() -> Option<serde_json::Value> {
+    OVERLAY_DATA.lock().unwrap().clone()
+}
+
+/// Journal de la lecture suivie (%APPDATA%\OneForAll\player.log), pour comprendre un souci chez l'utilisateur
+pub fn log(msg: &str) {
+    use std::io::Write as _;
+    let path = crate::config::data_dir().join("player.log");
+    // On repart de zéro au-delà de 200 Ko
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 200_000) {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let _ = writeln!(f, "[{t}] {msg}");
+    }
 }
 
 fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64) {
     hide_overlay(app);
-    let data = serde_json::json!({
+    *OVERLAY_DATA.lock().unwrap() = Some(serde_json::json!({
         "label": next.label,
         "title": next.title,
         "name": next.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
         "art": next.art,
         "seconds": seconds,
-    });
-    let url = tauri::WebviewUrl::App(format!("index.html#overlay={}", enc(&data.to_string())).into());
+    }));
+    let url = tauri::WebviewUrl::App("index.html".into());
     let (w, h) = (440.0, 156.0);
     let mut b = tauri::WebviewWindowBuilder::new(app, "overlay", url)
         .title("Épisode suivant")
@@ -117,7 +132,10 @@ fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64) {
         let (mw, mh) = (m.size().width as f64 / scale, m.size().height as f64 / scale);
         b = b.position(mw - w - 28.0, mh - h - 120.0);
     }
-    let _ = b.build();
+    match b.build() {
+        Ok(_) => log(&format!("fenêtre « épisode suivant » affichée : {} ({seconds} s)", next.path.display())),
+        Err(e) => log(&format!("fenêtre « épisode suivant » impossible : {e}")),
+    }
 }
 
 fn hide_overlay(app: &tauri::AppHandle) {
@@ -203,8 +221,36 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map(|a| a.port()).unwrap_or(18094)
 }
 
-/// Lance VLC sur ces fichiers (en playlist) et suit la lecture.
+/// VLC lancé par OneForAll et encore ouvert : on lui envoie les nouveaux épisodes au lieu d'en ouvrir un 2e
+struct Session {
+    items: Arc<Mutex<Vec<Item>>>,
+    /// Commandes à envoyer à VLC (par la boucle de suivi, qui tient la connexion)
+    cmds: Arc<Mutex<Vec<String>>>,
+}
+
+static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
+/// « C:\A B\x.mkv » → « file:///C:/A%20B/x.mkv » (pour les commandes add / enqueue de VLC)
+fn file_uri(p: &Path) -> String {
+    let s = p.display().to_string().replace('\\', "/");
+    let enc: String = s
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~/:".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    format!("file:///{enc}")
+}
+
+/// Lance VLC sur ces fichiers (en playlist) et suit la lecture — ou, s'il est déjà ouvert, remplace sa playlist.
 pub fn launch(app: tauri::AppHandle, vlc: &Path, items: Vec<Item>) -> Result<(), String> {
+    if let Some(sess) = SESSION.lock().unwrap().as_ref() {
+        let mut cmds = vec!["clear".to_string(), format!("add {}", file_uri(&items[0].path))];
+        cmds.extend(items[1..].iter().map(|i| format!("enqueue {}", file_uri(&i.path))));
+        *sess.items.lock().unwrap() = items;
+        sess.cmds.lock().unwrap().extend(cmds);
+        hide_overlay(&app);
+        log("VLC déjà ouvert : nouvelle playlist envoyée");
+        return Ok(());
+    }
     let port = free_port();
     let mut cmd = std::process::Command::new(vlc);
     cmd.args(["--extraintf", "rc", "--rc-host", &format!("127.0.0.1:{port}"), "--rc-quiet", "--no-one-instance"]);
@@ -218,18 +264,22 @@ pub fn launch(app: tauri::AppHandle, vlc: &Path, items: Vec<Item>) -> Result<(),
             cmd.arg(format!("--sub-track={}", s.nth.saturating_sub(1)));
         }
     }
-    // Plusieurs épisodes : VLC s'arrête à la fin de chacun, c'est la fenêtre « Épisode suivant »
-    // (ou la fin de son compte à rebours) qui lance la suite
-    if items.len() > 1 {
-        cmd.arg("--play-and-stop");
-    }
+    // VLC s'arrête à la fin de chaque épisode : c'est la fenêtre « Épisode suivant » (ou la fin de son
+    // compte à rebours) qui lance la suite. Toujours actif : la playlist peut être remplacée plus tard.
+    cmd.arg("--play-and-stop");
     cmd.args(items.iter().map(|i| &i.path));
     let mut child = cmd.spawn().map_err(|e| format!("VLC ne s'est pas lancé : {e}"))?;
+    log(&format!("VLC lancé (port {port}) avec {} fichier(s)", items.len()));
     *ACTION.lock().unwrap() = None;
+    let items = Arc::new(Mutex::new(items));
+    let cmds = Arc::new(Mutex::new(Vec::new()));
+    *SESSION.lock().unwrap() = Some(Session { items: items.clone(), cmds: cmds.clone() });
     std::thread::spawn(move || {
-        monitor(&app, port, &items);
+        monitor(&app, port, &items, &cmds);
+        *SESSION.lock().unwrap() = None;
         hide_overlay(&app);
         let _ = child.wait();
+        log("VLC fermé");
         let st = app.state::<crate::AppState>();
         st.watched.save();
     });
@@ -253,8 +303,7 @@ fn ask(s: &mut TcpStream, cmds: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out).to_string())
 }
 
-fn monitor(app: &tauri::AppHandle, port: u16, items: &[Item]) {
-    let index: HashMap<String, usize> = items.iter().enumerate().map(|(i, it)| (crate::watch::key(&it.path.display().to_string()), i)).collect();
+fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cmds: &Arc<Mutex<Vec<String>>>) {
     // VLC met un moment à ouvrir son port
     let mut stream = None;
     for _ in 0..60 {
@@ -264,7 +313,10 @@ fn monitor(app: &tauri::AppHandle, port: u16, items: &[Item]) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let Some(mut s) = stream else { return };
+    let Some(mut s) = stream else {
+        log("VLC n'a pas ouvert son interface de contrôle : pas de suivi");
+        return;
+    };
     let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
     let st = app.state::<crate::AppState>();
     let mut cur_uri: Option<String> = None;
@@ -275,6 +327,17 @@ fn monitor(app: &tauri::AppHandle, port: u16, items: &[Item]) {
     let mut offered: Option<String> = None;
     let mut cancelled: Option<String> = None;
     loop {
+        // Playlist actuelle (remplacée si un autre épisode est lancé depuis l'app)
+        let items = shared.lock().unwrap().clone();
+        let index: HashMap<String, usize> = items.iter().enumerate().map(|(i, it)| (crate::watch::key(&it.path.display().to_string()), i)).collect();
+        let pending: Vec<String> = std::mem::take(&mut *cmds.lock().unwrap());
+        if !pending.is_empty() {
+            offered = None;
+            cancelled = None;
+            if ask(&mut s, &(pending.join("\n") + "\n")).is_none() {
+                break;
+            }
+        }
         let Some(out) = ask(&mut s, "status\nget_time\nget_length\natrack\nstrack\n") else { break };
         let snap = parse_snapshot(&out);
         if snap.uri.is_some() && snap.uri != cur_uri {
@@ -358,6 +421,9 @@ fn monitor(app: &tauri::AppHandle, port: u16, items: &[Item]) {
         }
         // Attente (1,5 s), en restant réactif aux boutons de la fenêtre « Épisode suivant »
         for _ in 0..6 {
+            if !cmds.lock().unwrap().is_empty() {
+                break;
+            }
             if let Some(action) = ACTION.lock().unwrap().take() {
                 hide_overlay(app);
                 match action.as_str() {

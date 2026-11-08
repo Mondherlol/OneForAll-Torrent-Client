@@ -1,18 +1,14 @@
 <script>
   // Fenêtre « Épisode suivant », affichée par-dessus VLC pendant le générique de fin.
-  // Données passées dans l'adresse : index.html#overlay=<json>
+  // Ses données (épisode, série, affiche, durée du compte à rebours) viennent de la commande overlay_data.
   import { invoke } from "@tauri-apps/api/core";
   import Icon from "./Icon.svelte";
 
-  let data = {};
-  try {
-    data = JSON.parse(decodeURIComponent(location.hash.slice("#overlay=".length)));
-  } catch {}
-
-  const total = Math.max(3, data.seconds ?? 15);
-  let left = $state(total);
+  let data = $state(null);
+  let total = 15;
+  let left = $state(15);
   let done = false;
-  let artOk = $state(!!data.art);
+  let artOk = $state(false);
 
   function act(action) {
     if (done) return;
@@ -24,18 +20,28 @@
     // Fenêtre transparente : seule la carte se voit
     document.documentElement.style.background = "transparent";
     document.body.style.background = "transparent";
-    const started = Date.now();
-    const id = setInterval(() => {
-      left = Math.max(0, total - (Date.now() - started) / 1000);
-      if (left <= 0) {
-        clearInterval(id);
-        act("next");
-      }
-    }, 100);
+    let id;
+    invoke("overlay_data")
+      .then((d) => {
+        data = d ?? {};
+        artOk = !!data.art;
+        total = Math.max(3, data.seconds ?? 15);
+        left = total;
+        const started = Date.now();
+        id = setInterval(() => {
+          left = Math.max(0, total - (Date.now() - started) / 1000);
+          if (left <= 0) {
+            clearInterval(id);
+            act("next");
+          }
+        }, 100);
+      })
+      .catch(() => (data = {}));
     return () => clearInterval(id);
   });
 </script>
 
+{#if data}
 <div class="card" role="dialog" aria-label="Épisode suivant">
   {#if artOk}
     <img class="poster" src={data.art} alt="" onerror={() => (artOk = false)} />
@@ -55,6 +61,7 @@
     </div>
   </div>
 </div>
+{/if}
 
 <style>
   :global(html, body) { margin: 0; overflow: hidden; background: transparent; user-select: none; }
