@@ -104,7 +104,7 @@
   function onStaged(res) {
     if (res.errors?.length) flash(res.errors[0]);
     if (res.direct?.length) {
-      flash(res.direct.length > 1 ? `${res.direct.length} liens directs ajoutés à l'onglet Téléchargements` : "Lien direct ajouté à l'onglet Téléchargements");
+      flash(res.direct.length > 1 ? `${res.direct.length} liens ajoutés à l'onglet DL` : "Lien ajouté à l'onglet DL");
       refreshDownloads();
     }
     if (res.hashes?.length) staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];

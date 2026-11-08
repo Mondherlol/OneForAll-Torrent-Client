@@ -18,7 +18,8 @@
   const LINK_HINT = [
     "Un lien par ligne :",
     "• magnet:?xt=urn:btih:…  ou  https://…/fichier.torrent → torrent",
-    "• https://…/fichier.zip (lien direct) → onglet Téléchargements, avec reprise auto",
+    "• https://…/fichier.zip (lien direct) → onglet DL, avec reprise auto",
+    "• lien YouTube, X, Insta, TikTok… → onglet DL, vidéo en meilleure qualité",
   ].join("\n");
   const SOURCES = [
     { id: "c411", label: "C411" },

@@ -67,6 +67,13 @@ pub struct Dl {
     /// Connexion perdue, nouvel essai en attente (wifi coupé…)
     #[serde(skip)]
     pub retrying: bool,
+    /// Vidéo / musique d'un site (yt-dlp) : format voulu (max, 1080, 720, mp3) ; vide = fichier classique
+    pub media: String,
+    /// Miniature de la vidéo
+    pub thumb: String,
+    /// Étape en cours affichée à la place de l'avancement (installation de ffmpeg, conversion…)
+    #[serde(skip)]
+    pub note: String,
 }
 
 impl Dl {
@@ -256,10 +263,15 @@ impl Direct {
     }
 
     pub fn add(&self, url: &str) -> String {
+        self.add_media(url, "")
+    }
+
+    /// `media` : format yt-dlp (max, 1080, 720, mp3), ou vide pour un fichier classique
+    pub fn add_media(&self, url: &str, media: &str) -> String {
         let n = self.0.seq.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let id = format!("dl-{:x}{n:x}", nanos);
-        let dl = Dl { id: id.clone(), url: url.trim().to_string(), size: -1, st: St::Queued, added_on: now(), ..Default::default() };
+        let dl = Dl { id: id.clone(), url: url.trim().to_string(), size: -1, st: St::Queued, added_on: now(), media: media.to_string(), ..Default::default() };
         self.0.list.lock().unwrap().push(dl);
         self.save();
         id
@@ -329,6 +341,7 @@ impl Direct {
                         if matches!(d.st, St::Paused | St::Error) {
                             d.st = St::Queued;
                             d.error.clear();
+                            d.note.clear();
                         }
                     });
                 }
@@ -342,6 +355,7 @@ impl Direct {
                         let i = list.iter().position(|d| &d.id == id);
                         i.map(|i| list.remove(i))
                     };
+                    let _ = std::fs::remove_dir_all(crate::ytdl::tmp_dir(id));
                     if let Some(d) = removed.filter(|d| !d.name.is_empty()) {
                         // Un fichier inachevé ne sert à rien : il part toujours. Le fichier terminé, seulement si demandé.
                         let _ = std::fs::remove_file(d.part_path());
@@ -453,6 +467,15 @@ impl Direct {
                         d.segs = vec![Seg { start: 0, end: d.size, done: 0 }];
                     });
                 }
+                Err(Fail::Retry(msg)) if attempt >= 5 && self.get(id).is_some_and(|d| !d.media.is_empty()) => {
+                    self.update(id, |d| {
+                        d.st = St::Error;
+                        d.error = msg;
+                        d.retrying = false;
+                        d.note.clear();
+                    });
+                    return;
+                }
                 Err(Fail::Retry(msg)) => {
                     attempt += 1;
                     self.update(id, |d| {
@@ -473,6 +496,9 @@ impl Direct {
 
     fn finish(&self, id: &str) {
         let Some(d) = self.get(id) else { return };
+        if d.st == St::Done {
+            return;
+        }
         let dir = Path::new(&d.dir);
         // Le nom final a pu être pris entre-temps
         let name = if d.final_path().exists() { unique_name(dir, &d.name) } else { d.name.clone() };
@@ -512,7 +538,9 @@ impl Direct {
             .unwrap_or_else(|| "telechargement".into());
         let lname = name.to_lowercase();
         if ctype.starts_with("text/html") && disposition.is_empty() && !lname.ends_with(".html") && !lname.ends_with(".htm") {
-            return Err(Fail::Fatal("Ce lien ouvre une page web, pas un fichier. Les hébergeurs (1fichier, Uptobox…) ne sont pas encore pris en charge.".into()));
+            // Page web : peut-être une vidéo d'un site que yt-dlp connaît
+            self.update(id, |d| d.media = "max".into());
+            return Ok(());
         }
         let (size, resumable) = if status == reqwest::StatusCode::PARTIAL_CONTENT {
             let total = RE_RANGE_TOTAL.captures(&text(reqwest::header::CONTENT_RANGE)).and_then(|c| c[1].parse().ok()).unwrap_or(-1);
@@ -566,8 +594,14 @@ impl Direct {
 
     async fn run_once(&self, id: &str, stop: &Arc<AtomicBool>) -> Result<(), Fail> {
         let Some(d) = self.get(id) else { return Ok(()) };
+        if !d.media.is_empty() {
+            return self.run_media(id, stop).await;
+        }
         if d.segs.is_empty() || d.name.is_empty() {
             self.probe(id, &d.url).await?;
+            if self.get(id).is_some_and(|d| !d.media.is_empty()) {
+                return self.run_media(id, stop).await;
+            }
         } else if !d.part_path().is_file() {
             // .part supprimé à la main : on recommence
             self.update(id, |d| {
@@ -598,6 +632,133 @@ impl Direct {
             };
         }
         result
+    }
+
+    /// Vidéo ou musique d'un site, via yt-dlp. Pause = on arrête yt-dlp ; il reprend ses fichiers partiels au lancement suivant.
+    async fn run_media(&self, id: &str, stop: &Arc<AtomicBool>) -> Result<(), Fail> {
+        let d = self.get(id).ok_or(Fail::Fatal("Téléchargement retiré".into()))?;
+        let me = self.clone();
+        let idc = id.to_string();
+        let note = move |s: String| {
+            me.update(&idc, |d| d.note = s);
+        };
+        let exe = crate::ytdl::ytdlp(&self.0.client, &note).await.map_err(Fail::Retry)?;
+        let ff = crate::ytdl::ffmpeg(&self.0.client, &note).await.map_err(Fail::Retry)?;
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        // Playlist : un téléchargement par élément, celui-ci prend le premier
+        if crate::ytdl::is_playlist_url(&d.url) {
+            note("Lecture de la playlist…".into());
+            let urls = crate::ytdl::expand(&exe, &d.url).await;
+            let Some(first) = urls.first() else {
+                return Err(Fail::Fatal("Playlist vide ou introuvable.".into()));
+            };
+            for u in &urls[1..] {
+                let nid = self.add_media(u, &d.media);
+                self.update(&nid, |x| x.dir = d.dir.clone());
+            }
+            self.update(id, |x| x.url = first.clone());
+            self.save();
+        }
+        let d = self.get(id).ok_or(Fail::Fatal("Téléchargement retiré".into()))?;
+
+        let dir = if d.dir.is_empty() {
+            let folders = self.0.folders.lock().unwrap().0.clone();
+            let audio = folders.get("audio").filter(|f| !f.is_empty()).cloned();
+            if d.media == "mp3" { audio.unwrap_or_else(downloads_dir) } else { downloads_dir() }
+        } else {
+            d.dir.clone()
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| Fail::Fatal(format!("Dossier « {dir} » inaccessible : {e}")))?;
+        let tmp = crate::ytdl::tmp_dir(id);
+        let _ = std::fs::create_dir_all(&tmp);
+        self.update(id, |x| {
+            x.dir = dir.clone();
+            x.note = "Analyse du lien…".into();
+        });
+
+        let args = crate::ytdl::args(&d.url, &d.media, &dir, &tmp, &ff);
+        let (mut child, rx) = crate::ytdl::spawn(&exe, &args).map_err(|e| Fail::Fatal(format!("Lancement de yt-dlp impossible : {e}")))?;
+        // Image et son se téléchargent l'un après l'autre : on additionne
+        let (mut base, mut cur_done, mut cur_total, mut est) = (0i64, 0i64, 0i64, -1i64);
+        let mut file: Option<String> = None;
+        let mut errors: Vec<String> = Vec::new();
+        let mut exited = None;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                crate::ytdl::kill(&mut child);
+                self.update(id, |x| x.note.clear());
+                return Ok(());
+            }
+            let mut got = false;
+            while let Ok(line) = rx.try_recv() {
+                got = true;
+                use crate::ytdl::Line;
+                match crate::ytdl::parse(&line) {
+                    Line::Title(t) => {
+                        self.update(id, |x| x.name = sanitize(&t));
+                    }
+                    Line::Thumb(t) => {
+                        self.update(id, |x| x.thumb = t);
+                    }
+                    Line::Size(n) if n > 0 => est = n,
+                    Line::Progress(done, total) => {
+                        if done + 1024 * 1024 < cur_done {
+                            base += cur_total.max(cur_done);
+                        }
+                        cur_done = done;
+                        cur_total = total.max(done);
+                        let sum = base + cur_done;
+                        let size = est.max(base + cur_total);
+                        let finishing = total > 0 && done >= total;
+                        self.update(id, |x| {
+                            x.segs = vec![Seg { start: 0, end: size, done: sum }];
+                            x.size = size;
+                            x.retrying = false;
+                            x.error.clear();
+                            x.note = if finishing { "Finalisation…".into() } else { String::new() };
+                        });
+                    }
+                    Line::File(f) => file = Some(f),
+                    Line::Error(e) => errors.push(e),
+                    _ => {}
+                }
+            }
+            if exited.is_some() && !got {
+                break;
+            }
+            if exited.is_none() {
+                exited = child.try_wait().ok().flatten();
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        let ok = exited.is_some_and(|s| s.success());
+        let found = file.as_deref().map(PathBuf::from).filter(|p| p.is_file());
+        if let (true, Some(path)) = (ok, found) {
+            let len = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let parent = path.parent().map(|p| p.display().to_string()).unwrap_or(dir);
+            self.update(id, |x| {
+                x.name = name;
+                x.dir = parent;
+                x.size = len;
+                x.segs = vec![Seg { start: 0, end: len, done: len }];
+                x.st = St::Done;
+                x.completion_on = now();
+                x.retrying = false;
+                x.error.clear();
+                x.note.clear();
+            });
+            let _ = std::fs::remove_dir_all(&tmp);
+            self.save();
+            return Ok(());
+        }
+        self.update(id, |x| x.note.clear());
+        let last = errors.last().cloned().unwrap_or_else(|| if ok { "yt-dlp n'a produit aucun fichier".into() } else { "yt-dlp s'est arrêté sans explication".into() });
+        let (msg, fatal) = crate::ytdl::explain(&last);
+        Err(if fatal { Fail::Fatal(msg) } else { Fail::Retry(msg) })
     }
 
     /// Télécharge un morceau, en reprenant là où il s'était arrêté.
@@ -729,5 +890,37 @@ mod tests {
         println!("{:?} {} {} {}", f.st, f.name, f.size, f.error);
         assert_eq!(f.st, St::Done);
         assert_eq!(std::fs::metadata(f.final_path()).unwrap().len() as i64, f.size);
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+
+    /// Réseau : cargo test media_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn media_live() {
+        let dir = std::env::temp_dir().join("oneforall-media-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = Direct(Arc::new(Inner {
+            list: Mutex::new(Vec::new()),
+            running: Mutex::new(HashMap::new()),
+            folders: Mutex::new((BTreeMap::new(), true)),
+            dirty: AtomicBool::new(false),
+            seq: AtomicU64::new(0),
+            client: reqwest::Client::builder().user_agent(UA).build().unwrap(),
+            persist: false,
+        }));
+        let url = std::env::var("YT_URL").unwrap_or("https://www.youtube.com/watch?v=jNQXAC9IVRw".into());
+        for fmt in ["mp3", "720"] {
+            let id = d.add_media(&url, fmt);
+            d.update(&id, |x| x.dir = dir.display().to_string());
+            tauri::async_runtime::block_on(d.run(&id, Arc::new(AtomicBool::new(false))));
+            let f = d.get(&id).unwrap();
+            println!("{fmt}: {:?} « {} » {} o, miniature={} err={}", f.st, f.name, f.size, !f.thumb.is_empty(), f.error);
+            assert_eq!(f.st, St::Done);
+            assert!(f.final_path().is_file());
+        }
     }
 }

@@ -13,6 +13,7 @@ mod scan;
 mod schedule;
 mod search;
 mod watch;
+mod ytdl;
 
 use artwork::{Art, Artwork};
 use config::{category_for, Config, Settings};
@@ -504,6 +505,12 @@ struct DirectView {
     conns: usize,
     added_on: i64,
     completion_on: i64,
+    /// Vidéo / musique d'un site (yt-dlp) : format (max, 1080, 720, mp3) et son libellé
+    media: String,
+    media_label: String,
+    thumb: String,
+    /// Étape en cours (installation de yt-dlp / ffmpeg, analyse, finalisation…)
+    note: String,
 }
 
 #[tauri::command]
@@ -519,7 +526,20 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
             if m.kind == Kind::Anime && !split {
                 m.kind = Kind::Series;
             }
+            // Vidéo / musique d'un site : son titre tel quel, sa miniature (pas d'affiche de film à chercher)
+            if !d.media.is_empty() {
+                m.kind = if d.media == "mp3" { Kind::Audio } else { Kind::Other };
+                m.title = match raw.name.rsplit_once('.') {
+                    Some((stem, ext)) if d.st == direct::St::Done && ext.len() <= 4 => stem.to_string(),
+                    _ if d.name.is_empty() => String::new(),
+                    _ => raw.name.clone(),
+                };
+            }
             DirectView {
+                media: d.media.clone(),
+                media_label: if d.media.is_empty() { String::new() } else { ytdl::label(&d.media).into() },
+                thumb: d.thumb.clone(),
+                note: d.note.clone(),
                 conns: if d.st == direct::St::Running { d.segs.iter().filter(|s| s.end < 0 || s.start + s.done < s.end).count() } else { 0 },
                 id: d.id,
                 url: d.url,
@@ -574,8 +594,13 @@ fn set_watched(state: State<'_, AppState>, paths: Vec<String>, watched: bool) {
 }
 
 #[tauri::command]
-fn add_downloads(state: State<'_, AppState>, urls: Vec<String>) -> Vec<String> {
-    urls.iter().map(|u| u.trim()).filter(|u| u.starts_with("http")).map(|u| state.direct.add(u)).collect()
+fn add_downloads(state: State<'_, AppState>, urls: Vec<String>, format: Option<String>) -> Vec<String> {
+    let fmt = format.unwrap_or_else(|| "max".into());
+    urls.iter()
+        .map(|u| u.trim())
+        .filter(|u| u.starts_with("http"))
+        .map(|u| if ytdl::is_media_url(u) { state.direct.add_media(u, &fmt) } else { state.direct.add(u) })
+        .collect()
 }
 
 #[tauri::command]
@@ -598,6 +623,9 @@ async fn stage(st: &AppState, urls: &[String], paths: &[String]) -> Staged {
                 Ok(()) => out.hashes.extend(scan::magnet_hash(u)),
                 Err(e) => out.errors.push(e),
             }
+        } else if ytdl::is_media_url(u) {
+            // YouTube, X, Insta, TikTok… : directement dans l'onglet DL, meilleure qualité
+            out.direct.push(st.direct.add_media(u, "max"));
         } else if u.starts_with("http") {
             // Lien d'un fichier .torrent (ex. nyaa.si) : on le télécharge pour connaître son contenu
             let client = reqwest::Client::builder().user_agent("OneForAll/0.5").timeout(Duration::from_secs(20)).build();

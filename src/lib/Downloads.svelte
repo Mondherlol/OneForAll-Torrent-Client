@@ -30,14 +30,33 @@
   const pausedAny = $derived(downloads.some((d) => d.st === "paused"));
 
   $effect(() => {
-    for (const d of downloads) wantArt({ artKey: d.art_key, kind: d.kind, title: d.title, year: d.year });
+    for (const d of downloads) if (!d.media) wantArt({ artKey: d.art_key, kind: d.kind, title: d.title, year: d.year });
   });
+
+  // Vidéos / musiques des sites (yt-dlp) : même liste que ytdl.rs
+  const MEDIA_HOSTS = /(^|\.)(youtube\.com|youtu\.be|twitter\.com|x\.com|instagram\.com|tiktok\.com|facebook\.com|fb\.watch|vimeo\.com|dailymotion\.com|dai\.ly|twitch\.tv|reddit\.com|redd\.it|soundcloud\.com|bilibili\.com|streamable\.com|threads\.net|bsky\.app|kick\.com|pinterest\.(com|fr)|snapchat\.com|bandcamp\.com)$/i;
+  const isMedia = (u) => {
+    try {
+      return MEDIA_HOSTS.test(new URL(u).hostname);
+    } catch {
+      return false;
+    }
+  };
+  const FORMATS = [
+    { id: "max", label: "Vidéo max", hint: "Meilleure qualité dispo (4K si elle existe)" },
+    { id: "1080", label: "1080p", hint: "Full HD au maximum" },
+    { id: "720", label: "720p", hint: "Fichier plus léger" },
+    { id: "mp3", label: "MP3", hint: "Juste le son, avec la pochette" },
+  ];
+  let format = $state(localStorage.getItem("oneforall.dlformat") || "max");
+  $effect(() => localStorage.setItem("oneforall.dlformat", format));
+  const hasMedia = $derived(links.split(/\s+/).some(isMedia));
 
   async function add() {
     const urls = links.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (!urls.length) return flash("Colle au moins un lien https://…");
     try {
-      const ids = await addDownloads(urls);
+      const ids = await addDownloads(urls, format);
       links = "";
       flash(ids.length > 1 ? `${ids.length} téléchargements ajoutés` : "Téléchargement ajouté");
       onrefresh();
@@ -107,6 +126,7 @@
     if (d.st === "paused") return "En pause";
     if (d.st === "queued") return "En attente de son tour…";
     if (d.st === "error") return d.error || "Erreur";
+    if (d.note) return d.note;
     if (d.retrying) return d.error || "Connexion perdue — nouvel essai…";
     if (!d.size || d.size < 0) return d.speed ? fmtSpeed(d.speed) : "Connexion…";
     return "";
@@ -117,10 +137,20 @@
   <form class="add" onsubmit={(e) => (e.preventDefault(), add())}>
     <label class="field">
       <Icon name="link" size={15} />
-      <input bind:value={links} placeholder="Colle un ou plusieurs liens directs (https://…/fichier.zip)" spellcheck="false" />
+      <input bind:value={links} placeholder="Lien de fichier, ou de vidéo YouTube, X, Insta, TikTok…" spellcheck="false" />
     </label>
-    <button class="btn primary" disabled={!links.trim()}><Icon name="down" size={14} />Télécharger</button>
+    <button class="btn primary" disabled={!links.trim()}><Icon name="download" size={14} />Télécharger</button>
   </form>
+  {#if hasMedia}
+    <div class="fmts" transition:fly={{ y: -4, duration: 120 }}>
+      <span class="fl">Format</span>
+      {#each FORMATS as f}
+        <button class:on={format === f.id} title={f.hint} onclick={() => (format = f.id)}>
+          <Icon name={f.id === "mp3" ? "audio" : "film"} size={13} />{f.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   <div class="bar">
     <div class="seg">
@@ -141,7 +171,7 @@
   {#if !downloads.length}
     <div class="empty">
       <Icon name="down" size={34} />
-      <p><b>Aucun téléchargement direct</b><br />Colle un lien au-dessus (ou dans le bouton + → Lien). Le téléchargement reprend tout seul après une coupure de connexion ou un redémarrage, avec plusieurs connexions en parallèle.</p>
+      <p><b>Aucun téléchargement</b><br />Colle un lien au-dessus : un fichier (reprise auto après une coupure, plusieurs connexions en parallèle) ou une vidéo YouTube, X, Instagram, TikTok, SoundCloud… en HD ou en MP3. Les playlists sont dépliées.</p>
     </div>
   {:else if !shown.length}
     <p class="hint">Rien ici avec ce filtre.</p>
@@ -151,13 +181,15 @@
         {@const art = arts[d.art_key]}
         {@const pct = Math.floor(d.progress * 1000) / 10}
         <li class="st-{d.st}" class:retry={d.retrying} in:fly={{ y: 6, duration: 140 }} oncontextmenu={(e) => menu(e, d)} ondblclick={() => openItem(d)}>
-          <span class="thumb k-{d.kind}">
-            {#if art?.url}<img src={art.url} alt="" />{:else}<Icon name={d.kind} size={18} />{/if}
+          <span class="thumb k-{d.kind}" class:wide={d.media}>
+            {#if d.thumb}<img src={d.thumb} alt="" referrerpolicy="no-referrer" />
+            {:else if art?.url && !d.media}<img src={art.url} alt="" />
+            {:else}<Icon name={d.media ? (d.media === "mp3" ? "audio" : "film") : d.kind} size={18} />{/if}
           </span>
           <div class="main">
             <div class="top">
               <span class="title" title={d.name}>{d.title || d.name}</span>
-              <span class="kb">{KIND_LABEL[d.kind] ?? "Autre"}</span>
+              {#if d.media}<span class="kb fmt">{d.media_label}</span>{:else}<span class="kb">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
             </div>
             <span class="fname" title={d.url}>{d.name}</span>
             {#if d.st !== "done"}
@@ -218,6 +250,13 @@
   li.st-error { border-color: rgb(225 29 72 / 0.35); }
   .thumb { flex: none; width: 42px; height: 60px; border-radius: 7px; overflow: hidden; display: grid; place-items: center; background: var(--chip); color: var(--muted); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .thumb.wide { width: 96px; height: 54px; }
+  .kb.fmt { background: var(--accent-soft); color: var(--accent); }
+  .fmts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: -4px; }
+  .fl { font-size: 12px; font-weight: 650; color: var(--muted); margin-right: 2px; }
+  .fmts button { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .fmts button:hover { color: var(--text); border-color: var(--accent); }
+  .fmts button.on { background: var(--accent); border-color: var(--accent); color: white; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .title { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
