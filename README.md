@@ -23,7 +23,7 @@ Il faut [qBittorrent](https://www.qbittorrent.org/download) installé (OneForAll
 - 🖼️ **Affiches automatiques** (TMDB, TVmaze, AniList, Steam, Wikipédia, iTunes) et type détecté : films, séries, animés, jeux, logiciels, livres, audio
 - 📺 **Séries regroupées** : un épisode par ligne, badge S1 · É6, épisodes téléchargés dans l'ordre
 - ✅ **Choix des fichiers à l'ajout** : « les 3 premiers », une saison, tout… avec alerte si le disque est trop petit
-- 🔎 **Recherche intégrée** : C411 (Torznab) et Nyaa, magnet, glisser-déposer de .torrent
+- 🔎 **Recherche intégrée** : C411 (Torznab), Nyaa et Online-Fix (jeux), magnet, glisser-déposer de .torrent
 - ▶️ **Lecture directe** dans VLC, double-clic pour ouvrir
 - 🎮 **Jeux & logiciels** : détecte s'ils sont déjà installés (désinstaller, supprimer l'installable), formats consoles (NSP, XCI…)
 - 🩺 **Onglet Sources** : seeders, leechers, trackers, pairs — et pourquoi un torrent est bloqué
@@ -42,7 +42,7 @@ npm run tauri dev      # lance l'app en mode développement
 
 Le code : interface en Svelte 5 (`src/`), cœur en Rust (`src-tauri/src/`) :
 `qbit.rs` (API qBittorrent), `media.rs` (reconnaissance des noms), `artwork.rs` (affiches),
-`search.rs` (C411 / Nyaa), `installed.rs` (programmes installés), `scan.rs` (fichiers .torrent, disques).
+`search.rs` (C411 / Nyaa / Online-Fix), `installed.rs` (programmes installés), `scan.rs` (fichiers .torrent, disques).
 
 ## Publier une version
 

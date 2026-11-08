@@ -18,6 +18,7 @@
   const SOURCES = [
     { id: "c411", label: "C411" },
     { id: "nyaa", label: "Nyaa" },
+    { id: "online-fix", label: "Online-Fix" },
   ];
   let source = $state(localStorage.getItem("oneforall.source") ?? "c411");
   $effect(() => localStorage.setItem("oneforall.source", source));
@@ -121,7 +122,7 @@
       (r) =>
         (kindF === "all" || r.kind === kindF) &&
         (source !== "nyaa" || langF === "all" || r.lang === langF) &&
-        (!aliveOnly || r.seeders > 0) &&
+        (!aliveOnly || r.seeders !== 0) &&
         (!epCode || !epOnly || matchesEp(r.title)),
     );
     const cmp = {
@@ -271,8 +272,8 @@
                       <span class="kb k-{r.kind}">{KIND_LABEL[r.kind] ?? "Autre"}</span>
                       {#if r.lang}<span class="lb">{r.lang.toUpperCase()}</span>{/if}
                       {#if sameTeam(r)}<span class="team" title="Même équipe que ton dernier épisode">★ {prefer}</span>{/if}
-                      <b class="seed" class:dead={r.seeders === 0}>↑ {r.seeders}</b>
-                      <span>↓ {r.leechers}</span>
+                      {#if r.seeders >= 0}<b class="seed" class:dead={r.seeders === 0}>↑ {r.seeders}</b>
+                      <span>↓ {r.leechers}</span>{/if}
                       <span>{fmtSize(r.size)}</span>
                       <span>{fmtAgo(ts(r.date))}</span>
                     </span>
@@ -302,8 +303,8 @@
               <span class="kb k-{selected.kind}">{KIND_LABEL[selected.kind] ?? "Autre"}{selected.year ? ` · ${selected.year}` : ""}</span>
               <h3>{selected.clean || selected.title}</h3>
               <div class="pv-stats">
-                <span><b class="seed" class:dead={selected.seeders === 0}>{selected.seeders}</b> seeders</span>
-                <span><b>{selected.leechers}</b> leechers</span>
+                {#if selected.seeders >= 0}<span><b class="seed" class:dead={selected.seeders === 0}>{selected.seeders}</b> seeders</span>
+                <span><b>{selected.leechers}</b> leechers</span>{/if}
                 <span><b>{fmtSize(selected.size)}</b></span>
               </div>
             </div>

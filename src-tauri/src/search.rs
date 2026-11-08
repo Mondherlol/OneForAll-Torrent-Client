@@ -42,6 +42,13 @@ pub fn enrich(mut r: SearchResult) -> SearchResult {
     r.kind = m.kind.as_str().to_string();
     r.art_key = m.group_key.clone();
     r.year = m.year;
+    if r.source == "online-fix" {
+        // online-fix ne publie que des jeux
+        let mut m = m;
+        m.set_kind(crate::media::Kind::Game);
+        r.kind = m.kind.as_str().to_string();
+        r.art_key = m.group_key;
+    }
     r.lang = if r.source == "c411" || RE_FR.is_match(&r.title) {
         "fr".into()
     } else if r.category_id.ends_with("_4") {
@@ -236,8 +243,162 @@ async fn torznab_once(client: &Client, base: &str, key: &str, mut params: Vec<(&
     Ok(out)
 }
 
+/// Le site online-fix est en windows-1251 (reqwest est compilé sans décodage des jeux de caractères).
+fn cp1251(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0..=0x7F => b as char,
+            0xC0..=0xFF => char::from_u32(0x0410 + (b - 0xC0) as u32).unwrap_or('?'),
+            0xA8 => 'Ё',
+            0xB8 => 'ё',
+            0xA0 => ' ',
+            _ => '?',
+        })
+        .collect()
+}
+
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+static RE_OF_PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"class="big-link" href="([^"]+)""#).unwrap());
+static RE_OF_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<h2 class="title">(.*?)</h2>"#).unwrap());
+static RE_OF_SUFFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\s+по\s+сети\s*$").unwrap());
+static RE_OF_DIR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"https://uploads\.online-fix\.me:2053/torrents/[^"]+"#).unwrap());
+static RE_OF_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<a href="([^"]+\.torrent)">[^<]*</a>\s+(\d{2})-(\w{3})-(\d{4}) (\d{2}:\d{2})"#).unwrap());
+
+/// Recherche sur online-fix.me (jeux réparés pour le multijoueur). Le site n'a pas d'API :
+/// page de recherche → page du jeu → dossier « torrents » → fichiers .torrent (lus pour la taille et le hash).
+pub async fn online_fix(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let res = client
+        .get("https://online-fix.me/index.php")
+        .query(&[("do", "search"), ("subaction", "search"), ("story", query)])
+        .send()
+        .await
+        .map_err(|e| format!("online-fix.me injoignable : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("online-fix.me a répondu {}", res.status()));
+    }
+    let html = cp1251(&res.bytes().await.map_err(|e| e.to_string())?);
+    let games: Vec<(String, String)> = html
+        .split("news news-search")
+        .skip(1)
+        .filter_map(|b| {
+            let page = RE_OF_PAGE.captures(b)?[1].to_string();
+            let title = RE_OF_TITLE.captures(b).map(|c| decode(&c[1])).unwrap_or_default();
+            Some((page, RE_OF_SUFFIX.replace(title.trim(), "").trim().to_string()))
+        })
+        .take(15)
+        .collect();
+
+    // Chaque jeu demande 3 requêtes : on les lance en parallèle
+    let tasks: Vec<_> = games
+        .into_iter()
+        .map(|(page, title)| {
+            let client = client.clone();
+            tauri::async_runtime::spawn(async move { online_fix_game(&client, page, title).await })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for t in tasks {
+        if let Ok(list) = t.await {
+            out.extend(list);
+        }
+    }
+    Ok(out)
+}
+
+async fn online_fix_game(client: &Client, page: String, title: String) -> Vec<SearchResult> {
+    let get = |url: String| {
+        let client = client.clone();
+        async move {
+            let r = client.get(&url).header("Referer", "https://online-fix.me/").send().await.ok()?;
+            r.status().is_success().then_some(())?;
+            r.bytes().await.ok()
+        }
+    };
+    let Some(html) = get(page.clone()).await else { return Vec::new() };
+    let html = String::from_utf8_lossy(&html);
+    let Some(dir) = RE_OF_DIR.find(&html).map(|m| m.as_str().to_string()) else { return Vec::new() };
+    let dir = if dir.ends_with('/') { dir } else { format!("{dir}/") };
+    let Some(listing) = get(dir.clone()).await else { return Vec::new() };
+    let listing = String::from_utf8_lossy(&listing).to_string();
+    let mut out = Vec::new();
+    for c in RE_OF_FILE.captures_iter(&listing) {
+        let url = format!("{dir}{}", &c[1]);
+        let name = pct_decode(&c[1]).trim_end_matches(".torrent").to_string();
+        let (mut size, mut hash) = (0, String::new());
+        if let Some(bytes) = get(url.clone()).await {
+            if let Some((_, files)) = crate::scan::torrent_files(&bytes) {
+                size = files.iter().map(|f| f.size).sum();
+            }
+            hash = crate::scan::infohash(&bytes).unwrap_or_default().to_lowercase();
+        }
+        let r = enrich(SearchResult {
+            title: if title.is_empty() { name.clone() } else { title.clone() },
+            url,
+            page: page.clone(),
+            date: format!("{} {} {} {}:00 GMT", &c[2], &c[3], &c[4], &c[5]),
+            // Le site n'indique pas les sources : -1 = inconnu
+            seeders: -1,
+            leechers: -1,
+            downloads: 0,
+            hash,
+            category: "Jeux".into(),
+            size,
+            trusted: false,
+            source: "online-fix",
+            clean: String::new(),
+            kind: String::new(),
+            art_key: String::new(),
+            year: None,
+            lang: String::new(),
+            category_id: String::new(),
+        });
+        // Titre propre du site pour l'affiche, nom du fichier pour la version
+        out.push(SearchResult { title: name, ..r });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn online_fix_parsing() {
+        assert_eq!(super::cp1251(b"Valheim \xEF\xEE \xF1\xE5\xF2\xE8"), "Valheim по сети");
+        assert_eq!(super::RE_OF_SUFFIX.replace("Valheim по сети", ""), "Valheim");
+        assert_eq!(super::pct_decode("R.E.P.O.%20v1.torrent"), "R.E.P.O. v1.torrent");
+        let l = r#"<a href="Valheim.v1.0.21-OFME.torrent">Valheim.v1.0.21-OFME.torrent</a>                       04-Nov-2026 15:20     85K"#;
+        let c = super::RE_OF_FILE.captures(l).unwrap();
+        assert_eq!((&c[1], &c[3]), ("Valheim.v1.0.21-OFME.torrent", "Nov"));
+    }
+
+    /// Réseau : cargo test online_fix_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn online_fix_live() {
+        let client = reqwest::Client::builder().user_agent("OneForAll/0.4").build().unwrap();
+        let list = tauri::async_runtime::block_on(super::online_fix(&client, "valheim")).unwrap();
+        for r in &list {
+            println!("{} | {} | {} | {} | {} | {}", r.title, r.clean, r.kind, r.size, r.hash, r.url);
+        }
+        assert!(list.iter().any(|r| r.kind == "game" && r.size > 0 && !r.hash.is_empty()));
+    }
     #[test]
     fn torznab_item() {
         let xml = r#"<item><title>Film 2024 MULTi 1080p</title><link>https://x/api?t=get&amp;id=1</link><size>1234</size><enclosure url="https://x/api?t=get&amp;id=1&amp;apikey=k" length="1234" type="application/x-bittorrent"/><torznab:attr name="seeders" value="12"/><torznab:attr name="peers" value="15"/><torznab:attr name="infohash" value="ABC"/></item>"#;

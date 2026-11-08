@@ -378,6 +378,7 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
             let ids = search::tmdb_ids(&client, &tmdb_key, title_only.trim()).await;
             search::torznab(&client, "https://c411.org", &cfg.c411_key, query.trim(), "c411", ids).await
         }
+        "online-fix" => search::online_fix(&client, query.trim()).await,
         _ => search::nyaa(&client, query.trim()).await,
     }
 }
