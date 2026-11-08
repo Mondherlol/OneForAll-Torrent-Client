@@ -1,0 +1,91 @@
+<script>
+  // Fenêtre « Épisode suivant », affichée par-dessus VLC pendant le générique de fin.
+  // Données passées dans l'adresse : index.html#overlay=<json>
+  import { invoke } from "@tauri-apps/api/core";
+  import Icon from "./Icon.svelte";
+
+  let data = {};
+  try {
+    data = JSON.parse(decodeURIComponent(location.hash.slice("#overlay=".length)));
+  } catch {}
+
+  const total = Math.max(3, data.seconds ?? 15);
+  let left = $state(total);
+  let done = false;
+  let artOk = $state(!!data.art);
+
+  function act(action) {
+    if (done) return;
+    done = true;
+    invoke("overlay_action", { action }).catch(() => {});
+  }
+
+  $effect(() => {
+    // Fenêtre transparente : seule la carte se voit
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+    const started = Date.now();
+    const id = setInterval(() => {
+      left = Math.max(0, total - (Date.now() - started) / 1000);
+      if (left <= 0) {
+        clearInterval(id);
+        act("next");
+      }
+    }, 100);
+    return () => clearInterval(id);
+  });
+</script>
+
+<div class="card" role="dialog" aria-label="Épisode suivant">
+  {#if artOk}
+    <img class="poster" src={data.art} alt="" onerror={() => (artOk = false)} />
+  {:else}
+    <span class="poster ph"><Icon name="series" size={26} /></span>
+  {/if}
+  <div class="body">
+    <span class="kicker">Épisode suivant</span>
+    <b class="title">{data.label || data.name}</b>
+    <span class="show" title={data.name}>{data.title}</span>
+    <div class="actions">
+      <button class="go" onclick={() => act("next")} style="--p:{(1 - left / total) * 100}%">
+        <span class="fill"></span>
+        <span class="lbl"><Icon name="play" size={13} />Lancer · {Math.ceil(left)}</span>
+      </button>
+      <button class="cancel" onclick={() => act("cancel")}>Annuler</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  :global(html, body) { margin: 0; overflow: hidden; background: transparent; user-select: none; }
+  .card {
+    position: fixed;
+    inset: 6px;
+    display: flex;
+    gap: 14px;
+    padding: 12px 14px 12px 12px;
+    border-radius: 16px;
+    background: rgb(14 16 22 / 0.88);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.5);
+    backdrop-filter: blur(14px);
+    color: white;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    animation: rise 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px) scale(0.97); } }
+  .poster { width: 84px; height: 120px; flex: none; object-fit: cover; border-radius: 9px; box-shadow: 0 6px 16px rgb(0 0 0 / 0.5); }
+  .poster.ph { display: grid; place-items: center; background: rgb(255 255 255 / 0.08); color: rgb(255 255 255 / 0.6); }
+  .body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .kicker { font-size: 10.5px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: #4cc2ff; }
+  .title { margin-top: 3px; font-size: 19px; font-weight: 800; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .show { font-size: 12.5px; color: rgb(255 255 255 / 0.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .actions { margin-top: auto; display: flex; gap: 8px; }
+  button { height: 34px; border-radius: 9px; border: 0; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
+  .go { position: relative; flex: 1; overflow: hidden; background: rgb(255 255 255 / 0.18); color: #111; }
+  .go .fill { position: absolute; inset: 0; width: var(--p); background: white; transition: width 0.1s linear; }
+  .go .lbl { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 100%; mix-blend-mode: difference; color: white; font-variant-numeric: tabular-nums; }
+  .go:hover .fill { width: 100%; }
+  .cancel { padding: 0 14px; background: rgb(255 255 255 / 0.08); color: rgb(255 255 255 / 0.85); border: 1px solid rgb(255 255 255 / 0.14); }
+  .cancel:hover { background: rgb(255 255 255 / 0.16); color: white; }
+</style>

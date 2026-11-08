@@ -56,10 +56,74 @@ pub fn prefs_for(series: &str) -> Option<TrackPref> {
     PREFS.lock().unwrap().get(series).cloned()
 }
 
-/// Un fichier à lire, et la série à laquelle il appartient (pour les pistes préférées)
+/// Un fichier à lire, la série à laquelle il appartient (pistes préférées) et de quoi l'annoncer
+/// dans la fenêtre « Épisode suivant »
+#[derive(Clone)]
 pub struct Item {
     pub path: PathBuf,
     pub series: Option<String>,
+    /// « S1 · É5 » (vide si inconnu)
+    pub label: String,
+    /// Nom de la série / du film
+    pub title: String,
+    /// Affiche (URL)
+    pub art: Option<String>,
+}
+
+// ---------- fenêtre « Épisode suivant » ----------
+
+/// Proposée quand il reste moins de 90 s (générique de fin), compte à rebours de 15 s max
+const NEXT_AT_REMAINING_S: i64 = 90;
+const NEXT_COUNTDOWN_S: i64 = 15;
+
+/// Choix fait dans la fenêtre : « next » (lancer maintenant / fin du compte à rebours) ou « cancel »
+static ACTION: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn overlay_action(action: &str) {
+    *ACTION.lock().unwrap() = Some(action.to_string());
+}
+
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
+fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64) {
+    hide_overlay(app);
+    let data = serde_json::json!({
+        "label": next.label,
+        "title": next.title,
+        "name": next.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+        "art": next.art,
+        "seconds": seconds,
+    });
+    let url = tauri::WebviewUrl::App(format!("index.html#overlay={}", enc(&data.to_string())).into());
+    let (w, h) = (440.0, 156.0);
+    let mut b = tauri::WebviewWindowBuilder::new(app, "overlay", url)
+        .title("Épisode suivant")
+        .inner_size(w, h)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        // Ne pas prendre le focus : VLC reste en plein écran et garde le clavier
+        .focused(false);
+    // En bas à droite de l'écran principal, au-dessus de la barre de lecture de VLC
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let (mw, mh) = (m.size().width as f64 / scale, m.size().height as f64 / scale);
+        b = b.position(mw - w - 28.0, mh - h - 120.0);
+    }
+    let _ = b.build();
+}
+
+fn hide_overlay(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("overlay") {
+        let _ = win.destroy();
+    }
 }
 
 static RE_TRACK: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^\|\s*(-?\d+)\s*-\s*(.*?)(\s\*)?\s*$").unwrap());
@@ -74,10 +138,15 @@ struct Snapshot {
     length: Option<i64>,
     audio: Vec<Track>,
     subs: Vec<Track>,
+    /// Lecture arrivée au bout du fichier (« stop state » / « play state: 4 »)
+    stopped: bool,
 }
 
 fn parse_snapshot(out: &str) -> Snapshot {
     let mut s = Snapshot { uri: RE_INPUT.captures_iter(out).last().map(|c| c[1].to_string()), ..Default::default() };
+    // Dernier état annoncé : « ( play state: 3 ) » = lecture, « ( stop state: 5 ) » / « play state: 4 » = fini
+    let last_state = out.lines().filter(|l| l.contains("state:") || l.contains("( state ")).last().unwrap_or("");
+    s.stopped = last_state.contains("stop state") || last_state.contains("play state: 4") || last_state.contains("state stopped");
     // Nombres seuls sur une ligne : get_time puis get_length (dans l'ordre envoyé)
     let nums: Vec<i64> = out.lines().filter_map(|l| l.trim().parse::<i64>().ok()).collect();
     s.time = nums.first().copied();
@@ -149,11 +218,17 @@ pub fn launch(app: tauri::AppHandle, vlc: &Path, items: Vec<Item>) -> Result<(),
             cmd.arg(format!("--sub-track={}", s.nth.saturating_sub(1)));
         }
     }
+    // Plusieurs épisodes : VLC s'arrête à la fin de chacun, c'est la fenêtre « Épisode suivant »
+    // (ou la fin de son compte à rebours) qui lance la suite
+    if items.len() > 1 {
+        cmd.arg("--play-and-stop");
+    }
     cmd.args(items.iter().map(|i| &i.path));
     let mut child = cmd.spawn().map_err(|e| format!("VLC ne s'est pas lancé : {e}"))?;
-    let series: HashMap<String, Option<String>> = items.into_iter().map(|i| (crate::watch::key(&i.path.display().to_string()), i.series)).collect();
+    *ACTION.lock().unwrap() = None;
     std::thread::spawn(move || {
-        monitor(&app, port, &series);
+        monitor(&app, port, &items);
+        hide_overlay(&app);
         let _ = child.wait();
         let st = app.state::<crate::AppState>();
         st.watched.save();
@@ -178,7 +253,8 @@ fn ask(s: &mut TcpStream, cmds: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out).to_string())
 }
 
-fn monitor(app: &tauri::AppHandle, port: u16, series: &HashMap<String, Option<String>>) {
+fn monitor(app: &tauri::AppHandle, port: u16, items: &[Item]) {
+    let index: HashMap<String, usize> = items.iter().enumerate().map(|(i, it)| (crate::watch::key(&it.path.display().to_string()), i)).collect();
     // VLC met un moment à ouvrir son port
     let mut stream = None;
     for _ in 0..60 {
@@ -195,12 +271,18 @@ fn monitor(app: &tauri::AppHandle, port: u16, series: &HashMap<String, Option<St
     // Pistes déjà remises pour le fichier en cours (on ne retient les choix qu'après)
     let mut applied = false;
     let mut last_save = Instant::now();
+    // Fenêtre « Épisode suivant » : affichée pour quel fichier, annulée pour quel fichier
+    let mut offered: Option<String> = None;
+    let mut cancelled: Option<String> = None;
     loop {
         let Some(out) = ask(&mut s, "status\nget_time\nget_length\natrack\nstrack\n") else { break };
         let snap = parse_snapshot(&out);
         if snap.uri.is_some() && snap.uri != cur_uri {
             cur_uri = snap.uri.clone();
             applied = false;
+            if offered.take().is_some() {
+                hide_overlay(app);
+            }
         }
         let path = cur_uri.as_deref().and_then(crate::watch::mrl_to_path);
         if let (Some(p), Some(t), Some(len)) = (path.as_deref(), snap.time, snap.length) {
@@ -208,7 +290,37 @@ fn monitor(app: &tauri::AppHandle, port: u16, series: &HashMap<String, Option<St
                 st.watched.progress(p, t * 1000, len * 1000);
             }
         }
-        let serie = path.as_deref().and_then(|p| series.get(&crate::watch::key(p)).cloned().flatten());
+        let pos = path.as_deref().and_then(|p| index.get(&crate::watch::key(p)).copied());
+
+        // ----- épisode suivant -----
+        let next = pos.and_then(|i| items.get(i + 1));
+        if let (Some(next), Some(uri)) = (next, cur_uri.clone()) {
+            let remaining = match (snap.time, snap.length) {
+                (Some(t), Some(len)) if len > 0 => Some(len - t),
+                _ => None,
+            };
+            if snap.stopped {
+                // Fin de l'épisode (VLC s'arrête après chaque fichier) : on enchaîne, sauf si annulé
+                if cancelled.as_deref() != Some(uri.as_str()) && offered.as_deref() == Some(uri.as_str()) {
+                    hide_overlay(app);
+                    offered = None;
+                    if ask(&mut s, "next\n").is_none() {
+                        break;
+                    }
+                }
+            } else if let Some(rem) = remaining {
+                if rem <= NEXT_AT_REMAINING_S && rem >= 3 && offered.as_deref() != Some(uri.as_str()) && cancelled.as_deref() != Some(uri.as_str()) {
+                    show_overlay(app, next, NEXT_COUNTDOWN_S.min(rem - 1));
+                    offered = Some(uri.clone());
+                } else if rem > NEXT_AT_REMAINING_S + 10 && offered.as_deref() == Some(uri.as_str()) {
+                    // Retour en arrière dans l'épisode : on retire la proposition
+                    hide_overlay(app);
+                    offered = None;
+                }
+            }
+        }
+
+        let serie = pos.and_then(|i| items[i].series.clone());
         if let Some(serie) = serie.filter(|_| !snap.audio.is_empty()) {
             if !applied {
                 // Nouveau fichier : on remet les pistes de la série
@@ -244,7 +356,23 @@ fn monitor(app: &tauri::AppHandle, port: u16, series: &HashMap<String, Option<St
             st.watched.save();
             last_save = Instant::now();
         }
-        std::thread::sleep(Duration::from_millis(1500));
+        // Attente (1,5 s), en restant réactif aux boutons de la fenêtre « Épisode suivant »
+        for _ in 0..6 {
+            if let Some(action) = ACTION.lock().unwrap().take() {
+                hide_overlay(app);
+                match action.as_str() {
+                    "next" => {
+                        offered = None;
+                        if ask(&mut s, "next\n").is_none() {
+                            return st.watched.save();
+                        }
+                    }
+                    _ => cancelled = cur_uri.clone(),
+                }
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
     st.watched.save();
 }
@@ -292,6 +420,17 @@ mod tests {
         assert_eq!(current_pick(&after.audio).unwrap().lang, "Japonais");
         assert_eq!(current_pick(&after.subs).unwrap().lang, "Français");
         assert!(after.length.unwrap_or(0) > 0);
+    }
+
+    #[test]
+    fn end_of_episode() {
+        // Réponses réelles de VLC 3.0.23 (--play-and-stop)
+        let playing = "status change: ( play state: 3 )\r\n( state playing )\r\n1375\r\n1380\r\n";
+        let ended = "status change: ( play state: 4 ): End\r\nstatus change: ( stop state: 0 )\r\nstatus change: ( stop state: 5 )\r\nstatus: returned 0 (no error)\r\n0\r\n0\r\n";
+        let next = "status change: ( new input: file:///C:/x/E02.mkv )\r\nstatus change: ( play state: 3 )\r\n( state playing )\r\n1\r\n1420\r\n";
+        assert!(!parse_snapshot(playing).stopped);
+        assert!(parse_snapshot(ended).stopped);
+        assert!(!parse_snapshot(next).stopped);
     }
     #[test]
     fn picks_follow_language() {

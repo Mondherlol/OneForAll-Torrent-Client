@@ -549,6 +549,12 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
     out
 }
 
+/// Bouton de la fenêtre « Épisode suivant » : « next » ou « cancel ».
+#[tauri::command]
+fn overlay_action(action: String) {
+    player::overlay_action(&action);
+}
+
 /// Vu / en cours pour chaque fichier (clé = chemin demandé).
 #[tauri::command]
 fn get_watch(state: State<'_, AppState>, paths: Vec<String>) -> HashMap<String, watch::Watch> {
@@ -803,14 +809,14 @@ async fn play(app: tauri::AppHandle, state: State<'_, AppState>, hashes: Vec<Str
     let mut partial = Vec::new();
     for h in &hashes {
         let Some(t) = ts.iter().find(|t| &t.hash == h) else { continue };
-        let serie = Media::from_raw(t.clone()).group_key;
+        let show = show_info(&state, t).await;
         let mut files = state.qbit.files(h).await?;
         files.retain(|f| f.priority > 0 && f.progress > 0.0 && is_media(&f.name));
         files.sort_by(|a, b| nat_cmp(&a.name, &b.name));
         for f in files {
             let p = file_path(&t.save_path, &f);
             if p.is_file() {
-                let item = player::Item { path: p, series: Some(serie.clone()) };
+                let item = play_item(&show, p);
                 if f.progress >= 0.999 { complete.push(item) } else { partial.push(item) }
             }
         }
@@ -825,9 +831,39 @@ async fn play(app: tauri::AppHandle, state: State<'_, AppState>, hashes: Vec<Str
 #[tauri::command]
 async fn play_files(app: tauri::AppHandle, state: State<'_, AppState>, hash: String, paths: Vec<String>) -> Result<usize, String> {
     let ts = state.qbit.torrents().await?;
-    let serie = ts.iter().find(|t| t.hash == hash).map(|t| Media::from_raw(t.clone()).group_key);
-    let list = paths.into_iter().map(PathBuf::from).filter(|p| p.is_file()).map(|path| player::Item { path, series: serie.clone() }).collect();
+    let t = ts.iter().find(|t| t.hash == hash).ok_or("Torrent introuvable")?;
+    let show = show_info(&state, t).await;
+    let list = paths.into_iter().map(PathBuf::from).filter(|p| p.is_file()).map(|p| play_item(&show, p)).collect();
     start_player(app, list)
+}
+
+/// Série d'un torrent : clé (pistes préférées), titre, affiche — pour la fenêtre « Épisode suivant »
+struct ShowInfo {
+    key: String,
+    title: String,
+    art: Option<String>,
+}
+
+async fn show_info(state: &AppState, t: &qbit::RawTorrent) -> ShowInfo {
+    let m = Media::from_raw(t.clone());
+    let mut tmdb = state.cfg().tmdb_key;
+    if tmdb.is_empty() {
+        tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
+    }
+    let art = state.art.get(&m.group_key, m.kind.as_str(), &m.title, m.year, &tmdb).await.map(|a| a.url);
+    ShowInfo { key: m.group_key, title: m.title, art }
+}
+
+fn play_item(show: &ShowInfo, path: PathBuf) -> player::Item {
+    // Numéro d'épisode d'après le nom du fichier (« S01E05 », « - 05 », « 05. Titre »)
+    let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ep = Media::from_raw(qbit::RawTorrent { name, ..Default::default() });
+    let label = match (ep.season, ep.episode) {
+        (Some(s), Some(e)) => format!("S{s} · É{e}"),
+        (None, Some(e)) => format!("Épisode {e}"),
+        _ => String::new(),
+    };
+    player::Item { path, series: Some(show.key.clone()), label, title: show.title.clone(), art: show.art.clone() }
 }
 
 fn start_player(app: tauri::AppHandle, list: Vec<player::Item>) -> Result<usize, String> {
@@ -1631,6 +1667,7 @@ pub fn run() {
             nxbrew_links,
             get_watch,
             play_files,
+            overlay_action,
             set_watched,
             add_downloads,
             download_action,

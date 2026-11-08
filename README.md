@@ -28,6 +28,7 @@ Il faut [qBittorrent](https://www.qbittorrent.org/download) installé (OneForAll
 - ▶️ **Lecture directe** dans VLC, double-clic pour ouvrir
 - 👁️ **Épisodes vus / en cours** : lecture suivie dans VLC (position exacte), bouton « Reprendre É8 »
 - 🎧 **Pistes retenues par série** : audio japonais + sous-titres français choisis une fois, remis tout seuls sur les épisodes suivants
+- ⏭️ **Épisode suivant** : pendant le générique de fin, une fenêtre par-dessus VLC propose l'épisode suivant avec un compte à rebours
 - 🎮 **Jeux & logiciels** : détecte s'ils sont déjà installés (désinstaller, supprimer l'installable), formats consoles (NSP, XCI…)
 - 🩺 **Onglet Sources** : seeders, leechers, trackers, pairs — et pourquoi un torrent est bloqué
 - 🔔 **Notifications Windows** avec l'affiche quand un téléchargement se termine
