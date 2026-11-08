@@ -5,12 +5,18 @@ export const ui = $state({
   menu: null, // { x, y, items }
   confirm: null, // { title, text, ok, danger, resolve }
   toast: null,
+  studio: null, // chemin de la vidéo ouverte dans le studio d'extraits
 });
 
 export function openMenu(e, items) {
   e.preventDefault();
   e.stopPropagation();
   ui.menu = { x: e.clientX, y: e.clientY, items };
+}
+
+/** Studio d'extraits sur une vidéo locale (fichier, ou dossier : sa plus grosse vidéo) */
+export function openStudio(path) {
+  ui.studio = path;
 }
 
 export function confirmAsk(title, text, ok = "Confirmer", danger = false) {

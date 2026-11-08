@@ -1,6 +1,7 @@
 mod artwork;
 mod assoc;
 mod chapters;
+mod clip;
 mod config;
 mod customicon;
 mod direct;
@@ -542,6 +543,7 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
                 media_label: match d.media.as_str() {
                     "" => String::new(),
                     "compress" => "Compressé".into(),
+                    "clip" => "Extrait".into(),
                     "mp3" => "MP3".into(),
                     m if !d.res.is_empty() && m != "mp3" => d.res.clone(),
                     m => ytdl::label(m).into(),
@@ -679,6 +681,34 @@ async fn compress_info(path: String) -> Result<CompressInfo, String> {
 #[tauri::command]
 fn compress_video(state: State<'_, AppState>, path: String, target: i64) -> String {
     state.direct.add_compress(&path, target)
+}
+
+/// Studio d'extraits : pistes, durée et adresse de l'aperçu d'une vidéo locale
+#[tauri::command]
+async fn clip_open(path: String) -> Result<clip::Source, String> {
+    let ff = ytdl::ffmpeg(&reqwest::Client::new(), &|_| {}).await?;
+    tauri::async_runtime::spawn_blocking(move || clip::open(&ff, &path)).await.map_err(|e| e.to_string())?
+}
+
+/// Exporte les passages choisis (montage) en MP4 dans le dossier des extraits ; apparaît dans l'onglet DL
+#[tauri::command]
+fn clip_export(state: State<'_, AppState>, path: String, segs: Vec<clip::Seg>, height: i64, name: Option<String>) -> Result<String, String> {
+    if segs.is_empty() {
+        return Err("Aucun passage".into());
+    }
+    let dir = state.cfg().folders.get("clips").filter(|f| !f.trim().is_empty()).cloned().unwrap_or_else(|| {
+        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into());
+        Path::new(&home).join("Videos").join("OneForAll Extraits").display().to_string()
+    });
+    let stem = Path::new(&path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "extrait".into());
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| {
+        // « Épisode [12m30-13m10].mp4 »
+        let (a, b) = (segs[0].start, segs.last().map(|s| s.end).unwrap_or(0.0));
+        format!("{stem} [{}-{}]", clip::stamp(a), clip::stamp(b))
+    });
+    let name = if name.to_lowercase().ends_with(".mp4") { name } else { format!("{name}.mp4") };
+    let name: String = name.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
+    Ok(state.direct.add_clip(&clip::Spec { path, segs, height }, &dir, &name))
 }
 #[tauri::command]
 async fn download_action(state: State<'_, AppState>, ids: Vec<String>, action: String) -> Result<(), String> {
@@ -897,19 +927,36 @@ fn open_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("Ce fichier n'existe pas (encore).".into());
     }
-    // ShellExecute plutôt qu'explorer.exe : fiable avec les caractères spéciaux (« ： », 『』…) des titres
+    match shell_open(&path) {
+        Ok(()) => Ok(()),
+        // Aucune appli associée (ex. .mkv sans lecteur par défaut) : VLC s'il est là
+        Err(e) => match find_vlc() {
+            Some(vlc) => std::process::Command::new(vlc).arg(&path).spawn().map(|_| ()).map_err(|e| e.to_string()),
+            None => Err(e),
+        },
+    }
+}
+
+/// Ouvre un fichier, un dossier ou un lien comme un double-clic Windows.
+/// (explorer.exe ignore certains liens avec « & » et certains noms avec « ： » ou 『』, sans rien dire)
+fn shell_open(target: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::UI::Shell::ShellExecuteW;
         let wide = |s: &str| std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
-        let (verb, file) = (wide("open"), wide(&path));
-        let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
-        if r as isize > 32 {
-            return Ok(());
+        let (verb, file) = (wide("open"), wide(target));
+        let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) } as isize;
+        if r > 32 {
+            Ok(())
+        } else if r == 31 {
+            Err("Aucune application n'est associée à ce type de fichier.".into())
+        } else {
+            Err(format!("Ouverture impossible (code {r})"))
         }
     }
-    explorer(format!("\"{path}\""))
+    #[cfg(not(windows))]
+    explorer(format!("\"{target}\""))
 }
 
 fn find_vlc() -> Option<PathBuf> {
@@ -1389,7 +1436,8 @@ fn notify_finished(app: &tauri::AppHandle, m: &Media, poster: Option<&Path>, her
         toast = toast.icon(p, IconCrop::Square, &m.title);
     }
     if let Some(p) = hero {
-        toast = toast.hero(p, &m.title);
+        // Petite vignette à gauche (le bandeau « hero » prenait la moitié de l'écran)
+        toast = toast.icon(p, IconCrop::Square, &m.title);
     }
     let _ = toast.show();
 }
@@ -1399,14 +1447,14 @@ async fn thumb_file(id: &str, url: &str) -> Option<PathBuf> {
     if url.is_empty() {
         return None;
     }
-    let path = config::data_dir().join("thumbs").join(format!("{id}.png"));
+    let path = config::data_dir().join("thumbs").join(format!("{id}-sq.png"));
     if path.is_file() {
         return Some(path);
     }
     let bytes = reqwest::Client::new().get(url).timeout(Duration::from_secs(10)).send().await.ok()?.bytes().await.ok()?;
     let img = image::load_from_memory(&bytes).ok()?;
-    // Bandeau 2:1 comme le veut Windows, sans déformer
-    let img = img.resize_to_fill(728, 364, image::imageops::FilterType::Triangle);
+    // Vignette carrée (centre de l'image)
+    let img = img.resize_to_fill(256, 256, image::imageops::FilterType::Triangle);
     std::fs::create_dir_all(path.parent()?).ok()?;
     img.save_with_format(&path, image::ImageFormat::Png).ok()?;
     Some(path)
@@ -1645,7 +1693,7 @@ fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err("Adresse refusée".into());
     }
-    explorer(format!("\"{url}\""))
+    shell_open(&url)
 }
 
 /// Ouvre la page Windows « Applications par défaut » de OneForAll (pour les liens magnet).
@@ -1852,6 +1900,8 @@ pub fn run() {
             media_info,
             compress_info,
             compress_video,
+            clip_open,
+            clip_export,
             download_action,
             move_downloads,
         ])

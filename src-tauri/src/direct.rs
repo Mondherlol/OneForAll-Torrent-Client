@@ -367,6 +367,122 @@ impl Direct {
         Ok(())
     }
 
+    /// Export d'extraits (studio) : `spec` = clip::Spec en JSON, gardé dans `url`
+    pub fn add_clip(&self, spec: &crate::clip::Spec, dir: &str, name: &str) -> String {
+        let _ = std::fs::create_dir_all(dir);
+        let name = unique_name(Path::new(dir), name);
+        let id = self.add_media(&serde_json::to_string(spec).unwrap_or_default(), "clip");
+        self.update(&id, |d| {
+            d.dir = dir.to_string();
+            d.name = name;
+        });
+        self.save();
+        id
+    }
+
+    async fn run_clip(&self, id: &str, stop: &Arc<AtomicBool>) -> Result<(), Fail> {
+        let d = self.get(id).ok_or(Fail::Fatal("Retiré".into()))?;
+        let spec: crate::clip::Spec = serde_json::from_str(&d.url).map_err(|_| Fail::Fatal("Extrait illisible".into()))?;
+        let me = self.clone();
+        let idc = id.to_string();
+        let note = move |s: String| {
+            me.update(&idc, |d| d.note = s);
+        };
+        let ff = crate::ytdl::ffmpeg(&self.0.client, &note).await.map_err(Fail::Retry)?;
+        let src = crate::clip::open(&ff, &spec.path).map_err(Fail::Fatal)?;
+        let tmp = crate::ytdl::tmp_dir(id);
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).map_err(|e| Fail::Fatal(e.to_string()))?;
+        let total: f64 = spec.segs.iter().map(|s| (s.end - s.start).max(0.1)).sum();
+        let mut done_secs = 0.0;
+        let mut parts = Vec::new();
+        for (i, seg) in spec.segs.iter().enumerate() {
+            let out = tmp.join(format!("p{i}.mp4"));
+            let args = crate::clip::export_args(&src, seg, spec.height, &out);
+            let mut cmd = crate::clip::ffmpeg_in(&src);
+            cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| Fail::Fatal(format!("Lancement de ffmpeg impossible : {e}")))?;
+            let rx = crate::ytdl::pipe_lines(&mut child);
+            let label = if spec.segs.len() > 1 { format!("Passage {}/{}", i + 1, spec.segs.len()) } else { "Export".into() };
+            let mut errors = Vec::new();
+            let mut exited = None;
+            loop {
+                if stop.load(Ordering::Relaxed) {
+                    crate::ytdl::kill(&mut child);
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    self.update(id, |x| {
+                        x.note.clear();
+                        x.segs.clear();
+                    });
+                    return Ok(());
+                }
+                let mut got = false;
+                while let Ok(line) = rx.try_recv() {
+                    got = true;
+                    if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                        let frac = ((done_secs + us / 1e6) / total).clamp(0.0, 1.0);
+                        let l = label.clone();
+                        self.update(id, |x| {
+                            x.size = 1000;
+                            x.segs = vec![Seg { start: 0, end: 1000, done: (frac * 1000.0) as i64 }];
+                            x.note = format!("{l}… {} %", (frac * 100.0) as i64);
+                        });
+                    } else if !line.contains('=') && !line.trim().is_empty() {
+                        errors.push(line);
+                    }
+                }
+                if exited.is_some() && !got {
+                    break;
+                }
+                if exited.is_none() {
+                    exited = child.try_wait().ok().flatten();
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            if !exited.is_some_and(|s| s.success()) || !out.is_file() {
+                let _ = std::fs::remove_dir_all(&tmp);
+                let msg = errors.last().cloned().unwrap_or_else(|| "ffmpeg s'est arrêté".into());
+                return Err(Fail::Fatal(format!("Export impossible : {}", msg.chars().take(200).collect::<String>())));
+            }
+            done_secs += (seg.end - seg.start).max(0.1);
+            parts.push(out);
+        }
+        let fin = Path::new(&d.dir).join(&d.name);
+        if parts.len() == 1 {
+            move_file(&parts[0], &fin).map_err(|e| Fail::Fatal(e.to_string()))?;
+        } else {
+            // Montage : les passages ont le même format, on les colle sans réencoder
+            self.update(id, |x| x.note = "Assemblage…".into());
+            let list = tmp.join("list.txt");
+            let body: String = parts.iter().map(|p| format!("file '{}'\n", p.display().to_string().replace('\'', "'\\''"))).collect();
+            std::fs::write(&list, body).map_err(|e| Fail::Fatal(e.to_string()))?;
+            let st = crate::clip::ffmpeg_in(&src)
+                .args(["-v", "error", "-y", "-nostdin", "-f", "concat", "-safe", "0", "-i"])
+                .arg(&list)
+                .args(["-c", "copy", "-movflags", "+faststart"])
+                .arg(&fin)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if !st.is_ok_and(|s| s.success()) {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(Fail::Fatal("Assemblage des passages impossible".into()));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        let len = std::fs::metadata(&fin).map(|m| m.len() as i64).unwrap_or(0);
+        self.update(id, |x| {
+            x.size = len;
+            x.segs = vec![Seg { start: 0, end: len, done: len }];
+            x.st = St::Done;
+            x.completion_on = now();
+            x.note.clear();
+            x.error.clear();
+        });
+        self.save();
+        Ok(())
+    }
+
     pub fn set_section(&self, id: &str, section: &str) {
         self.update(id, |d| d.section = section.to_string());
         self.save();
@@ -707,6 +823,9 @@ impl Direct {
         if d.media == "compress" {
             return self.run_compress(id, stop).await;
         }
+        if d.media == "clip" {
+            return self.run_clip(id, stop).await;
+        }
         if !d.media.is_empty() {
             return self.run_media(id, stop).await;
         }
@@ -836,7 +955,14 @@ impl Direct {
                 use crate::ytdl::Line;
                 match crate::ytdl::parse(&line) {
                     Line::Title(t) if track.is_none() => {
-                        self.update(id, |x| x.name = sanitize(&t));
+                        // Un extrait passe par ffmpeg, qui ne donne pas d'avancement : on le dit plutôt que de rester sur « Analyse »
+                        let cutting = d.section().is_some();
+                        self.update(id, |x| {
+                            x.name = sanitize(&t);
+                            if cutting {
+                                x.note = "Téléchargement de l'extrait…".into();
+                            }
+                        });
                     }
                     Line::Thumb(t) => {
                         self.update(id, |x| x.thumb = t);
@@ -1096,5 +1222,36 @@ mod media_tests2 {
             println!("{:?} « {} » {} o err={}", f.st, f.name, f.size, f.error);
             assert_eq!(f.st, St::Done);
         }
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    /// cargo test clip_job_live -- --ignored --nocapture  (CLIP=vidéo)
+    #[test]
+    #[ignore]
+    fn clip_job_live() {
+        let d = Direct(Arc::new(Inner {
+            list: Mutex::new(Vec::new()),
+            running: Mutex::new(HashMap::new()),
+            folders: Mutex::new((BTreeMap::new(), true)),
+            dirty: AtomicBool::new(false),
+            seq: AtomicU64::new(0),
+            client: reqwest::Client::new(),
+            persist: false,
+        }));
+        let path = std::env::var("CLIP").unwrap();
+        let segs = vec![
+            crate::clip::Seg { start: 8.0, end: 14.0, audio: Some(0), sub: None },
+            crate::clip::Seg { start: 8.0, end: 14.0, audio: Some(1), sub: Some(1) },
+        ];
+        let dir = std::env::temp_dir().join("ofa-clip-job");
+        let id = d.add_clip(&crate::clip::Spec { path, segs, height: 720 }, &dir.display().to_string(), "montage.mp4");
+        tauri::async_runtime::block_on(d.run(&id, Arc::new(AtomicBool::new(false))));
+        let f = d.get(&id).unwrap();
+        println!("{:?} {} {} o err={}", f.st, f.name, f.size, f.error);
+        assert_eq!(f.st, St::Done);
     }
 }

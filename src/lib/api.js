@@ -44,6 +44,8 @@ export const addDownloads = (urls, format, section) => invoke("add_downloads", {
 export const mediaInfo = (url) => invoke("media_info", { url });
 export const compressInfo = (path) => invoke("compress_info", { path });
 export const compressVideo = (path, target) => invoke("compress_video", { path, target });
+export const clipOpen = (path) => invoke("clip_open", { path });
+export const clipExport = (path, segs, height, name) => invoke("clip_export", { path, segs, height, name });
 export const downloadAction = (ids, action) => invoke("download_action", { ids, action });
 export const moveDownloads = (ids, dir) => invoke("move_downloads", { ids, dir });
 export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });

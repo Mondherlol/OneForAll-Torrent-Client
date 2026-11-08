@@ -325,12 +325,17 @@
           {/each}
         </div>
         <h3 class="dlh">Onglet DL</h3>
-        <p class="hint">Tous les téléchargements de l'onglet DL (fichiers, vidéos, musiques) arrivent ici, quel que soit leur type.</p>
+        <p class="hint">Tous les téléchargements de l'onglet DL (fichiers, vidéos, musiques) arrivent ici, quel que soit leur type. Les extraits du studio vont dans leur propre dossier.</p>
         <div class="folders">
           <div class="folder">
             <span class="fk"><Icon name="download" size={16} />DL</span>
             <input class="text" bind:value={settings.folders.dl} placeholder="Téléchargements (par défaut)" spellcheck="false" />
             <button class="btn" onclick={() => browse("dl")}>Parcourir…</button>
+          </div>
+          <div class="folder">
+            <span class="fk"><Icon name="scissors" size={16} />Extraits</span>
+            <input class="text" bind:value={settings.folders.clips} placeholder="Vidéos\OneForAll Extraits (par défaut)" spellcheck="false" />
+            <button class="btn" onclick={() => browse("clips")}>Parcourir…</button>
           </div>
         </div>
         <div class="actions">

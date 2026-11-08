@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import { getFiles, getWatch, openPath, playFiles, setFilePriority, setWatched, trashTorrentFiles } from "./api.js";
   import { fmtSize, isPaused } from "./model.js";
-  import { confirmAsk, flash, openMenu } from "./ui.svelte.js";
+  import { confirmAsk, flash, openMenu, openStudio } from "./ui.svelte.js";
 
   let { torrent, fill = false, episodes = false, onaction = null } = $props();
   // Pause / reprise à portée de main, au-dessus de la liste
@@ -199,6 +199,7 @@
         ? { label: "Marquer comme pas vu", icon: "eye", run: () => markSeen([f], false) }
         : { label: "Marquer comme vu", icon: "eye", run: () => markSeen([f], true) }),
       VIDEO.test(f.name) && { label: "Marquer vus jusqu'ici", icon: "check", run: () => markSeen(upTo(f), true) },
+      VIDEO.test(f.name) && f.progress > 0 && { label: "Capturer un extrait…", icon: "scissors", run: () => openStudio(fullPath(f)) },
     ]);
   }
 </script>

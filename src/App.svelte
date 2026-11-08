@@ -13,6 +13,7 @@
   import { stageTorrents, qbitStatus, setupQbit, openUrl, getCustomIcon, organizeShows } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
+  import Studio from "./lib/Studio.svelte";
   import { getDownloads } from "./lib/api.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -61,7 +62,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { getCategories, getDisks, getTorrents, openPath, play, reveal, runSetup, setCategory, setLocation, shareTorrents, torrentAction, uninstallProgram } from "./lib/api.js";
   import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, buildGroups, fmtSize, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
-  import { confirmAsk, copy, flash, openMenu, refreshArt, ui } from "./lib/ui.svelte.js";
+  import { confirmAsk, copy, flash, openMenu, openStudio, refreshArt, ui } from "./lib/ui.svelte.js";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
   let prefs = $state({ ...DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.prefs") ?? "{}") });
@@ -481,8 +482,11 @@
     const canPlay = one && (g.kind === "film" || ((g.kind === "series" || g.kind === "anime") && one.episode != null)) && one.progress > 0;
     const inst = its.find((i) => i.installed)?.installed;
     const installable = g.kind === "game" || g.kind === "software";
+    // Studio d'extraits : un film / un épisode (fichier vidéo, ou dossier qui en contient)
+    const clipable = one && one.progress > 0 && (canPlay || /\.(mkv|mp4|avi|m4v|mov|webm|ts|m2ts|wmv)$/i.test(one.content_path ?? ""));
     openMenu(e, [
       canPlay && { label: "Lire", icon: "play", run: () => startPlay(its) },
+      clipable && { label: "Capturer un extrait…", icon: "scissors", run: () => openStudio(one.content_path || one.save_path) },
       ...extra,
       { label: "Afficher les détails", icon: "list", run: () => (selectedKey = g.key) },
       { label: inst ? "Ouvrir le dossier de l'installable" : "Ouvrir le dossier", icon: "folder", run: () => onaction("reveal", its[0]) },
@@ -850,6 +854,9 @@
 {/if}
 
 <ContextMenu />
+{#if ui.studio}
+  <Studio path={ui.studio} onexported={() => ((view = "downloads"), refreshDownloads())} />
+{/if}
 <Confirm />
 
 {#if ui.toast}

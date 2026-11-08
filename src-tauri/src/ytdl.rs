@@ -45,12 +45,11 @@ pub fn is_playlist_url(url: &str) -> bool {
 }
 
 /// Formats proposés : max, 1080, 720, mp3
-pub fn label(fmt: &str) -> &'static str {
+pub fn label(fmt: &str) -> String {
     match fmt {
-        "mp3" => "MP3",
-        "1080" => "1080p",
-        "720" => "720p",
-        _ => "Auto",
+        "mp3" => "MP3".into(),
+        h if h.parse::<i64>().is_ok() => res_label(h.parse().unwrap_or(0)),
+        _ => "Auto".into(),
     }
 }
 
@@ -234,7 +233,7 @@ pub fn args(j: &Job) -> Vec<String> {
     let sort = |res: &str| format!("{res}fps,vcodec:h264,acodec:aac");
     match fmt {
         "mp3" => a.extend(["-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-thumbnail"].map(String::from)),
-        "1080" | "720" => a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), sort(&format!("res:{fmt},")), "--merge-output-format".into(), "mp4/mkv".into()]),
+        h if h.parse::<u32>().is_ok() => a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), sort(&format!("res:{fmt},")), "--merge-output-format".into(), "mp4/mkv".into()]),
         _ => a.extend(["-f".into(), "bv*+ba/b".into(), "-S".into(), sort("res,"), "--merge-output-format".into(), "mp4/mkv".into()]),
     }
     for p in [
@@ -275,6 +274,33 @@ pub fn spawn(exe: &Path, args: &[String]) -> std::io::Result<(Child, std::sync::
         });
     }
     Ok((child, rx))
+}
+
+/// Lignes de stdout + stderr d'un processus déjà lancé (pipes)
+pub fn pipe_lines(child: &mut Child) -> std::sync::mpsc::Receiver<String> {
+    use std::io::BufRead;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut pipes: Vec<Box<dyn std::io::Read + Send>> = Vec::new();
+    if let Some(o) = child.stdout.take() {
+        pipes.push(Box::new(o));
+    }
+    if let Some(e) = child.stderr.take() {
+        pipes.push(Box::new(e));
+    }
+    for p in pipes {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut r = std::io::BufReader::new(p);
+            let mut buf = Vec::new();
+            while r.read_until(b'\n', &mut buf).map(|n| n > 0).unwrap_or(false) {
+                if tx.send(String::from_utf8_lossy(&buf).trim_end().to_string()).is_err() {
+                    break;
+                }
+                buf.clear();
+            }
+        });
+    }
+    rx
 }
 
 /// Liens de chaque élément d'une playlist
@@ -357,6 +383,10 @@ pub struct Info {
     pub preview: String,
     /// Hauteurs disponibles, de la plus grande à la plus petite
     pub heights: Vec<i64>,
+    /// (hauteur, taille estimée en octets ; 0 = inconnue)
+    pub sizes: Vec<(i64, i64)>,
+    /// Taille estimée en MP3
+    pub mp3: i64,
     /// En-têtes exigés par le serveur pour lire `preview` (YouTube refuse un autre User-Agent)
     #[serde(skip)]
     pub headers: Vec<(String, String)>,
@@ -389,6 +419,20 @@ pub async fn info(exe: &Path, url: &str) -> Result<Info, String> {
         .unwrap_or_default();
     heights.sort_unstable_by(|a, b| b.cmp(a));
     heights.dedup();
+    // Taille estimée par définition (meilleure image de cette hauteur + meilleur son) et en MP3
+    let fsize = |f: &serde_json::Value| f["filesize"].as_i64().or(f["filesize_approx"].as_i64()).unwrap_or(0);
+    let formats = v["formats"].as_array().cloned().unwrap_or_default();
+    let audio_best = formats.iter().filter(|f| f["vcodec"].as_str() == Some("none") && f["acodec"].as_str() != Some("none")).map(fsize).max().unwrap_or(0);
+    let duration = v["duration"].as_f64().unwrap_or(0.0);
+    let sizes: Vec<(i64, i64)> = heights
+        .iter()
+        .map(|&h| {
+            let best = formats.iter().filter(|f| f["height"].as_i64() == Some(h) && f["vcodec"].as_str() != Some("none")).map(fsize).max().unwrap_or(0);
+            (h, if best > 0 { best + audio_best } else { 0 })
+        })
+        .collect();
+    // MP3 « meilleure qualité » ≈ 245 kbit/s
+    let mp3 = (duration * 245_000.0 / 8.0) as i64;
     let preview = v["url"].as_str().filter(|_| v["vcodec"].as_str() != Some("none")).unwrap_or("").to_string();
     Ok(Info {
         title: v["title"].as_str().unwrap_or("").into(),
@@ -396,6 +440,8 @@ pub async fn info(exe: &Path, url: &str) -> Result<Info, String> {
         thumb: v["thumbnail"].as_str().unwrap_or("").into(),
         preview,
         heights,
+        sizes,
+        mp3,
         headers: v["http_headers"]
             .as_object()
             .map(|h| h.iter().filter(|(k, _)| k.as_str() != "Sec-Fetch-Mode").filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
