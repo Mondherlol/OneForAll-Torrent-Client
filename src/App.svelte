@@ -531,7 +531,24 @@
     ]);
   }
 
-  const itemMenu = (e, it, g = null, extra = []) => menuFor(e, g ?? buildGroups([it], false)[0], extra);
+  const itemMenu = (e, it, g = null, extra = [], episode = false) => (episode ? episodeMenu(e, it, extra) : menuFor(e, g ?? buildGroups([it], false)[0], extra));
+
+  // Épisode d'une série faite de plusieurs torrents : le même menu qu'un épisode d'un pack (pas de « détails »,
+  // catégorie, déplacement…), plus partager et supprimer.
+  function episodeMenu(e, it, watch = []) {
+    const incomplete = it.progress < 1 && it.status !== "error";
+    openMenu(e, [
+      { label: "Lire", icon: "play", run: () => startPlay([it]), disabled: it.progress <= 0 },
+      incomplete && !isPaused(it.status) && { label: "Pause", icon: "pause", run: () => onaction("pause", [it]) },
+      incomplete && isPaused(it.status) && { label: "Reprendre", icon: "play", run: () => onaction("resume", [it]) },
+      watch.length && "-",
+      ...watch,
+      it.progress > 0 && { label: "Capturer un extrait…", icon: "scissors", run: () => openStudio(it.content_path || it.save_path) },
+      "-",
+      shareMenu([it], it),
+      { label: "Supprimer l'épisode", icon: "trash", danger: true, run: () => remove([it], true) },
+    ]);
+  }
 
   // Un clic ailleurs que sur une carte (ou sur les barres d'action) annule la sélection
   function clearSelOutside(e) {

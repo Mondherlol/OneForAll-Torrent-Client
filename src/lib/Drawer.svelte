@@ -304,7 +304,7 @@
             class:paused
             class:err={it.status === "error"}
             class:seen={wi?.watched}
-            oncontextmenu={(e) => onitemmenu(e, it, null, watchMenu(it))}
+            oncontextmenu={(e) => onitemmenu(e, it, null, watchMenu(it), isVideo && !single)}
             ondblclick={(e) => !e.target.closest("button") && it.progress > 0 && onaction(isVideo ? "play" : "reveal", isVideo ? [it] : it)}
           >
             {#if epLabel(it)}<span class="ep">{epLabel(it)}</span>{/if}
@@ -336,7 +336,7 @@
             {#if isVideo}
               <button class="mini play" title="Lire" disabled={it.progress <= 0 || it.status === "error"} onclick={() => onaction("play", [it])}><Icon name="play" size={11} /></button>
             {/if}
-            <button class="mini" title="Plus d'actions" onclick={(e) => onitemmenu(e, it, null, watchMenu(it))}><Icon name="more" size={14} /></button>
+            <button class="mini" title="Plus d'actions" onclick={(e) => onitemmenu(e, it, null, watchMenu(it), isVideo && !single)}><Icon name="more" size={14} /></button>
           </li>
           {/if}
         {/each}
