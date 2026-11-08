@@ -4,7 +4,7 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, setCustomIcon, getCustomIcon, organizeShows, trashFiles, reveal } from "./api.js";
-  import { KINDS, fmtDate, fmtSize, fmtSpeed } from "./model.js";
+  import { KINDS, THEMES, fmtDate, fmtSize, fmtSpeed } from "./model.js";
   import { confirmAsk, flash } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
 
@@ -243,9 +243,13 @@
         <h3><Icon name="sun" size={15} />Apparence</h3>
         <div class="srow">
           <span class="sl">Thème</span>
-          <div class="seg">
-            <button class:on={prefs.theme === "light"} onclick={() => (prefs.theme = "light")}><Icon name="sun" size={14} />Clair</button>
-            <button class:on={prefs.theme === "dark"} onclick={() => (prefs.theme = "dark")}><Icon name="moon" size={14} />Sombre</button>
+          <div class="themes">
+            {#each THEMES as t}
+              <button class="theme" class:on={prefs.theme === t.id} onclick={() => (prefs.theme = t.id)} title={t.label}>
+                <span class="tsw" style="background:{t.sw[0]}"><i style="background:{t.sw[1]}"></i><i style="background:{t.sw[1]};opacity:.45"></i>{#if t.id === "kawaii"}<em>🎀</em>{/if}</span>
+                <span class="tname"><Icon name={t.icon} size={12} />{t.label}</span>
+              </button>
+            {/each}
           </div>
         </div>
         <div class="srow">
@@ -507,6 +511,15 @@
   .text { flex: 1; height: 36px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; outline: none; min-width: 0; }
   .text:focus, .unit input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
 
+  .themes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+  .theme { display: flex; flex-direction: column; gap: 6px; padding: 5px; border-radius: 11px; border: 1.5px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; cursor: pointer; transition: border-color 0.12s, transform 0.12s; }
+  .theme:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .theme.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); color: var(--text); }
+  .tsw { position: relative; display: flex; align-items: flex-end; gap: 4px; width: 74px; height: 42px; padding: 6px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); }
+  .tsw i { display: block; height: 8px; border-radius: 4px; flex: 1; }
+  .tsw i:first-child { flex: 2; }
+  .tsw em { position: absolute; top: 3px; right: 5px; font-style: normal; font-size: 13px; }
+  .tname { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; font-weight: 650; }
   .seg { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--chip); }
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; }
   .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }

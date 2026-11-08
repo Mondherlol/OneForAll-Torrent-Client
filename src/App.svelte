@@ -61,7 +61,7 @@
   import Icon from "./lib/Icon.svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { getCategories, getDisks, getTorrents, openPath, play, reveal, runSetup, setCategory, setLocation, shareTorrents, torrentAction, uninstallProgram } from "./lib/api.js";
-  import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, buildGroups, fmtSize, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
+  import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, THEMES, buildGroups, fmtSize, themeOf, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
   import { confirmAsk, copy, flash, openMenu, openStudio, refreshArt, ui } from "./lib/ui.svelte.js";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
@@ -108,6 +108,24 @@
   let globalPause = $state(false); // bandeau seulement après « Tout mettre en pause »
   let dragging = $state(false);
   let searchEl, mainEl;
+  // Recherche absente de la bibliothèque → proposer de la chercher sur les sites (modale +)
+  let searchFocus = $state(false);
+  const webQuery = $derived(query.trim().length >= 2 && !/^(magnet:|https?:)/i.test(query.trim()) ? query.trim() : "");
+  function searchWeb(q = webQuery) {
+    if (!q) return;
+    addInit = { query: q, kind: prefs.kind !== "all" ? prefs.kind : null };
+    addOpen = true;
+    query = "";
+    searchEl?.blur();
+  }
+  function searchKey(e) {
+    if (e.key !== "Enter" || !webQuery) return;
+    if (e.shiftKey || !searched.length) (e.preventDefault(), searchWeb());
+  }
+  function themeMenu(e) {
+    const r = e.currentTarget.getBoundingClientRect();
+    openMenu({ preventDefault() {}, stopPropagation() {}, clientX: r.right - 180, clientY: r.bottom + 6 }, THEMES.map((t) => ({ label: t.label, icon: t.icon, checked: prefs.theme === t.id, run: () => (prefs.theme = t.id) })));
+  }
 
   // Torrents ajoutés sans démarrer, en attente du choix des fichiers (un à la fois)
   let staged = $state([]);
@@ -157,7 +175,7 @@
   // ---------- thème & mode compact ----------
   $effect(() => {
     document.documentElement.dataset.theme = prefs.theme;
-    win.setTheme(prefs.theme).catch(() => {});
+    win.setTheme(themeOf(prefs.theme).dark ? "dark" : "light").catch(() => {});
   });
   $effect(() => {
     const check = async () => {
@@ -653,11 +671,23 @@
 
     <button class="add" title="Ajouter un torrent (rechercher, magnet, fichier)" onclick={() => (addOpen = true)}><Icon name="plus" size={18} /></button>
 
-    <label class="search">
-      <Icon name="search" size={16} />
-      <input bind:this={searchEl} bind:value={query} onpaste={pasteSearch} placeholder="Rechercher… ou colle un lien à télécharger" spellcheck="false" />
-      <kbd>/</kbd>
-    </label>
+    <div class="search-wrap">
+      <label class="search">
+        <Icon name="search" size={16} />
+        <input bind:this={searchEl} bind:value={query} onpaste={pasteSearch} onkeydown={searchKey} onfocus={() => (searchFocus = true)} onblur={() => (searchFocus = false)} placeholder="Rechercher… ou colle un lien à télécharger" spellcheck="false" />
+        <kbd>/</kbd>
+      </label>
+      {#if searchFocus && webQuery}
+        <div class="suggest" transition:fly={{ y: -6, duration: 120 }}>
+          <p class="sg-local">{searched.length ? `${searched.length} torrent${searched.length > 1 ? "s" : ""} dans ta bibliothèque` : "Pas dans ta bibliothèque"}</p>
+          <button class="sg-go" onmousedown={(e) => e.preventDefault()} onclick={() => searchWeb()}>
+            <span class="sg-ic"><Icon name="download" size={16} /></span>
+            <span class="sg-txt"><b>Chercher « {webQuery} » pour le télécharger</b><small>C411, Nyaa, Online-Fix, FitGirl, NXBrew</small></span>
+            <kbd>{searched.length ? "Maj+Entrée" : "Entrée"}</kbd>
+          </button>
+        </div>
+      {/if}
+    </div>
 
     <div class="right">
       {#each usedDisks as d (d.mount)}
@@ -683,8 +713,8 @@
         <Icon name={allPaused ? "playAll" : "pauseAll"} size={17} />
         <span class="tlabel">{allPaused ? "Tout reprendre" : "Tout en pause"}</span>
       </button>
-      <button class="icon-btn" title={prefs.theme === "light" ? "Thème sombre" : "Thème clair"} onclick={() => (prefs.theme = prefs.theme === "light" ? "dark" : "light")}>
-        <Icon name={prefs.theme === "light" ? "moon" : "sun"} size={16} />
+      <button class="icon-btn" title="Thème : {themeOf(prefs.theme).label}" onclick={themeMenu}>
+        <Icon name={themeOf(prefs.theme).icon} size={16} />
       </button>
       <button class="icon-btn" title="Réglages" onclick={() => ((settingsTab = "general"), (settingsOpen = true))}>
         <Icon name="settings" size={16} />
@@ -797,6 +827,7 @@
         <Icon name="search" size={40} />
         <h2>Rien ici</h2>
         <p>Aucun élément ne correspond à ces filtres.</p>
+        {#if webQuery}<button class="btn primary" onclick={() => searchWeb()}><Icon name="download" size={15} />Chercher « {webQuery} » pour le télécharger</button>{/if}
       </div>
     {:else}
       <div class="grid">
@@ -911,11 +942,16 @@
   .add { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--accent); color: white; cursor: pointer; flex: none; box-shadow: 0 4px 14px -4px var(--accent); transition: transform 0.12s, filter 0.12s; }
   .add:hover { filter: brightness(1.1); transform: scale(1.05); }
   .dropzone { position: fixed; inset: 12px; z-index: 400; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; border: 3px dashed var(--accent); border-radius: 20px; background: rgb(0 103 192 / 0.12); backdrop-filter: blur(4px); color: var(--accent); font-size: 18px; pointer-events: none; }
+  .search-wrap { position: relative; flex: 1; max-width: 460px; min-width: 140px; margin: 0 auto; }
+  .suggest { position: absolute; z-index: 80; top: calc(100% + 6px); left: 0; right: 0; padding: 6px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--menu-bg); backdrop-filter: blur(16px); box-shadow: var(--shadow-lg); }
+  .sg-local { margin: 2px 8px 6px; font-size: 11.5px; color: var(--muted); }
+  .sg-go { width: 100%; display: flex; align-items: center; gap: 10px; padding: 8px; border: 0; border-radius: 9px; background: var(--accent-soft); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+  .sg-go:hover { background: var(--ring); }
+  .sg-ic { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--accent); color: white; }
+  .sg-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .sg-txt b { font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sg-txt small { font-size: 11px; color: var(--muted); }
   .search {
-    flex: 1;
-    max-width: 460px;
-    min-width: 140px;
-    margin: 0 auto;
     display: flex;
     align-items: center;
     gap: 10px;

@@ -6,6 +6,11 @@
   import { nxbrewLinks, openUrl, previewTorrent, searchTorrents, stageTorrents } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, wantArt } from "./ui.svelte.js";
+  import icoC411 from "../assets/sources/c411.ico";
+  import icoNyaa from "../assets/sources/nyaa.png";
+  import icoOnlineFix from "../assets/sources/online-fix.ico";
+  import icoFitgirl from "../assets/sources/fitgirl.ico";
+  import icoNxbrew from "../assets/sources/nxbrew.png";
 
   let { torrents, onclose, onadded, initial = null } = $props();
 
@@ -21,19 +26,60 @@
     "• https://…/fichier.zip (lien direct) → onglet DL, avec reprise auto",
     "• lien YouTube, X, Insta, TikTok… → onglet DL, vidéo en meilleure qualité",
   ].join("\n");
-  const SOURCES = [
-    { id: "c411", label: "C411" },
-    { id: "nyaa", label: "Nyaa" },
-    { id: "online-fix", label: "Online-Fix" },
-    { id: "fitgirl", label: "FitGirl" },
-    { id: "nxbrew", label: "NXBrew" },
+  const SOURCES = {
+    c411: { label: "C411", ico: icoC411, desc: "Films, séries, animés, jeux… en FR" },
+    nyaa: { label: "Nyaa", ico: icoNyaa, desc: "Animés et mangas" },
+    "online-fix": { label: "Online-Fix", ico: icoOnlineFix, desc: "Jeux PC jouables en ligne" },
+    fitgirl: { label: "FitGirl", ico: icoFitgirl, desc: "Repacks de jeux PC" },
+    nxbrew: { label: "NXBrew", ico: icoNxbrew, desc: "Jeux Switch (liens d'hébergeurs)" },
+  };
+  // Genre → sites où ça a du sens de chercher
+  const GENRES = [
+    { id: "all", label: "Tout", icon: "all", sources: ["c411", "nyaa", "online-fix", "fitgirl", "nxbrew"] },
+    { id: "film", label: "Films", icon: "film", sources: ["c411"] },
+    { id: "series", label: "Séries", icon: "series", sources: ["c411"] },
+    { id: "anime", label: "Animés", icon: "anime", sources: ["c411", "nyaa"] },
+    { id: "game", label: "Jeux", icon: "game", sources: ["online-fix", "fitgirl", "nxbrew", "c411"] },
+    { id: "software", label: "Logiciels", icon: "software", sources: ["c411"] },
+    { id: "audio", label: "Musique", icon: "audio", sources: ["c411"] },
+    { id: "book", label: "Livres", icon: "book", sources: ["c411", "nyaa"] },
   ];
-  let source = $state(localStorage.getItem("oneforall.source") ?? "c411");
+  let genre = $state(localStorage.getItem("oneforall.genre") ?? "all");
+  if (!GENRES.some((g) => g.id === genre)) genre = "all";
+  const genreSources = $derived(GENRES.find((g) => g.id === genre).sources);
+  // "all" = tous les sites du genre, en parallèle
+  let source = $state(localStorage.getItem("oneforall.source") ?? "all");
   $effect(() => localStorage.setItem("oneforall.source", source));
+  $effect(() => localStorage.setItem("oneforall.genre", genre));
+  const targets = $derived(source === "all" || !genreSources.includes(source) ? genreSources : [source]);
   let query = $state("");
   let results = $state(null);
-  let loading = $state(false);
-  let error = $state(null);
+  let status = $state({}); // site → { loading } | { n } | { error }
+  const loading = $derived(Object.values(status).some((st) => st.loading));
+  const failed = $derived(Object.entries(status).filter(([, st]) => st.error));
+  const error = $derived(results && !results.length && !loading && failed.length && failed.length === Object.keys(status).length ? failed.map(([id, st]) => (failed.length > 1 ? `${SOURCES[id].label} : ${st.error}` : st.error)).join(" · ") : null);
+  let srcF = $state("all");
+
+  // Recherches récentes
+  let recent = $state(JSON.parse(localStorage.getItem("oneforall.recent") ?? "[]"));
+  function remember(q) {
+    recent = [q, ...recent.filter((x) => x.toLowerCase() !== q.toLowerCase())].slice(0, 10);
+    localStorage.setItem("oneforall.recent", JSON.stringify(recent));
+  }
+  function forgetRecent() {
+    recent = [];
+    localStorage.removeItem("oneforall.recent");
+  }
+  function pickGenre(id) {
+    genre = id;
+    const srcs = GENRES.find((g) => g.id === id).sources;
+    if (source !== "all" && !srcs.includes(source)) source = "all";
+    if (results) search();
+  }
+  function pickSource(id) {
+    source = id;
+    if (results) search();
+  }
   let links = $state("");
   let added = $state(new Set());
   let inputEl = $state();
@@ -45,20 +91,33 @@
 
   const have = $derived(new Set(torrents.map((t) => t.hash.toLowerCase())));
 
+  let run = 0;
   async function search() {
-    if (!query.trim()) return;
-    loading = true;
-    error = null;
+    const q = query.trim();
+    if (!q) return;
+    const id = ++run;
+    const srcs = targets;
+    remember(q);
     selected = null;
     kindF = "all";
-    try {
-      results = await searchTorrents(query, source);
-    } catch (e) {
-      error = String(e);
-      results = null;
-    } finally {
-      loading = false;
-    }
+    srcF = "all";
+    results = [];
+    status = Object.fromEntries(srcs.map((x) => [x, { loading: true }]));
+    // Chaque site répond à son rythme : les résultats arrivent au fur et à mesure
+    await Promise.all(
+      srcs.map(async (x) => {
+        try {
+          const res = await searchTorrents(q, x);
+          if (id !== run) return;
+          const seen = new Set(results.map((r) => r.url));
+          results = [...results, ...res.filter((r) => !seen.has(r.url))];
+          status[x] = { n: res.length };
+        } catch (e) {
+          if (id === run) status[x] = { error: String(e) };
+        }
+      }),
+    );
+    if (id === run && genre !== "all" && results.some((r) => r.kind === genre)) kindF = genre;
   }
 
   // Les torrents sont ajoutés sans démarrer ; l'app propose ensuite de choisir les fichiers (onadded)
@@ -125,12 +184,19 @@
     for (const r of results ?? []) counts[r.kind] = (counts[r.kind] ?? 0) + 1;
     return KINDS.filter((k) => counts[k.id]).map((k) => ({ ...k, n: counts[k.id] }));
   });
+  const srcsIn = $derived.by(() => {
+    const counts = {};
+    for (const r of results ?? []) counts[r.source] = (counts[r.source] ?? 0) + 1;
+    return Object.keys(SOURCES).filter((id) => counts[id]).map((id) => ({ id, n: counts[id] }));
+  });
+  const hasNyaa = $derived(srcsIn.some((x) => x.id === "nyaa"));
   const collator = new Intl.Collator("fr", { numeric: true, sensitivity: "base" });
   const shown = $derived.by(() => {
     let list = (results ?? []).filter(
       (r) =>
         (kindF === "all" || r.kind === kindF) &&
-        (source !== "nyaa" || langF === "all" || r.lang === langF) &&
+        (srcF === "all" || r.source === srcF) &&
+        (r.source !== "nyaa" || langF === "all" || r.lang === langF) &&
         (!aliveOnly || r.seeders !== 0) &&
         (!epCode || !epOnly || matchesEp(r.title)),
     );
@@ -155,7 +221,13 @@
     // untrack : sinon chaque frappe dans le champ relancerait cette recherche
     untrack(() => {
       query = init.query;
-      source = init.source;
+      if (init.source) {
+        if (!GENRES.find((g) => g.id === genre).sources.includes(init.source)) genre = "all";
+        source = init.source;
+      } else {
+        genre = GENRES.some((g) => g.id === init.kind) ? init.kind : "all";
+        source = "all";
+      }
       epCode = init.code ?? null;
       prefer = init.prefer ?? null;
       search();
@@ -223,18 +295,41 @@
   </header>
 
   {#if tab === "search"}
-    <form class="bar" onsubmit={(e) => (e.preventDefault(), search())}>
-      <label class="field">
-        <Icon name="search" size={16} />
-        <input bind:this={inputEl} bind:value={query} placeholder="Ex. : Black Clover 1080p" spellcheck="false" />
-      </label>
-      <div class="srcs" title="Où chercher">
-        {#each SOURCES as s}
-          <button type="button" class:on={source === s.id} onclick={() => ((source = s.id), results && search())}>{s.label}</button>
+    <div class="hero">
+      <form class="bar" onsubmit={(e) => (e.preventDefault(), search())}>
+        <label class="field">
+          <Icon name="search" size={18} />
+          <input bind:this={inputEl} bind:value={query} placeholder={genre === "game" ? "Ex. : Elden Ring" : genre === "anime" ? "Ex. : Frieren 1080p" : "Ex. : Black Clover 1080p"} spellcheck="false" />
+          {#if query}<button type="button" class="clear" title="Effacer" onclick={() => ((query = ""), inputEl?.focus())}><Icon name="close" size={13} /></button>{/if}
+          <button class="go" disabled={!query.trim()}>{#if loading}<span class="spinner light"></span>{:else}<Icon name="search" size={15} />{/if}Rechercher</button>
+        </label>
+      </form>
+
+      <div class="genres" role="tablist" aria-label="Genre">
+        {#each GENRES as g}
+          <button type="button" class="genre k-{g.id}" class:on={genre === g.id} onclick={() => pickGenre(g.id)}><Icon name={g.icon} size={14} />{g.label}</button>
         {/each}
       </div>
-      <button class="btn primary" disabled={loading || !query.trim()}>{loading ? "Recherche…" : "Rechercher"}</button>
-    </form>
+
+      <div class="srcs" aria-label="Sites">
+        {#if genreSources.length > 1}
+          <button type="button" class="src all" class:on={source === "all" || !genreSources.includes(source)} onclick={() => pickSource("all")} title="Chercher sur tous ces sites en même temps">
+            <span class="src-ico"><Icon name="layers" size={13} /></span>Partout
+          </button>
+          <span class="src-sep"></span>
+        {/if}
+        {#each genreSources as id}
+          {@const sc = SOURCES[id]}
+          {@const st = status[id]}
+          <button type="button" class="src" class:on={source === id || genreSources.length === 1} class:in={targets.includes(id) && genreSources.length > 1 && source === "all"} onclick={() => pickSource(id)} title={st?.error ?? sc.desc}>
+            <img class="src-ico" src={sc.ico} alt="" />{sc.label}
+            {#if st?.loading}<span class="spinner"></span>
+            {:else if st?.error}<span class="src-n err">!</span>
+            {:else if st}<span class="src-n">{st.n}</span>{/if}
+          </button>
+        {/each}
+      </div>
+    </div>
 
     {#if results?.length}
       <!-- Tris et filtres -->
@@ -248,8 +343,16 @@
             <button class:on={kindF === k.id} onclick={() => (kindF = k.id)} title={k.label}><Icon name={k.id} size={13} /><em>{k.n}</em></button>
           {/each}
         </div>
-        {#if source === "nyaa"}
-          <div class="chips" title="Langue">
+        {#if srcsIn.length > 1}
+          <div class="chips" title="Site">
+            <button class:on={srcF === "all"} onclick={() => (srcF = "all")}>Tous sites</button>
+            {#each srcsIn as x}
+              <button class:on={srcF === x.id} onclick={() => (srcF = x.id)} title={SOURCES[x.id].label}><img class="mini-ico" src={SOURCES[x.id].ico} alt="" /><em>{x.n}</em></button>
+            {/each}
+          </div>
+        {/if}
+        {#if hasNyaa}
+          <div class="chips" title="Langue (Nyaa)">
             {#each LANGS as l}
               <button class:on={langF === l.id} onclick={() => (langF = l.id)}>{l.label}</button>
             {/each}
@@ -260,13 +363,19 @@
         {/if}
         <label class="alive"><input type="checkbox" bind:checked={aliveOnly} />Avec sources</label>
       </div>
+      {#if loading || failed.length}
+        <div class="notes">
+          {#if loading}<span class="pending"><span class="spinner"></span>Encore {Object.entries(status).filter(([, st]) => st.loading).map(([id]) => SOURCES[id].label).join(", ")}…</span>{/if}
+          {#each failed as [id, st]}<span class="fail" title={st.error}><img class="mini-ico" src={SOURCES[id].ico} alt="" />{SOURCES[id].label} n'a pas répondu</span>{/each}
+        </div>
+      {/if}
     {/if}
 
     <div class="body">
       <div class="results">
         {#if error}
           <p class="hint err">{error}</p>
-        {:else if loading}
+        {:else if loading && !results?.length}
           <!-- Squelette pendant la recherche -->
           <ul class="skel">
             {#each Array(7) as _, i}
@@ -274,7 +383,11 @@
             {/each}
           </ul>
         {:else if results && !shown.length}
-          <p class="hint">{results.length ? "Aucun résultat avec ces filtres." : `Aucun résultat pour « ${query} ».`}</p>
+          <div class="empty">
+            <Icon name="search" size={34} />
+            <b>{results.length ? "Aucun résultat avec ces filtres" : `Aucun résultat pour « ${query} »`}</b>
+            {#if !results.length && genre !== "all"}<button class="btn" onclick={() => pickGenre("all")}><Icon name="layers" size={14} />Chercher sur tous les sites</button>{/if}
+          </div>
         {:else if results}
           <ul>
             {#each shown as r (r.url)}
@@ -288,6 +401,7 @@
                   <span class="rbody">
                     <span class="rtitle" title={r.title}>{#if r.trusted}<i class="trusted" title="Uploader de confiance"></i>{/if}{r.title}</span>
                     <span class="rmeta">
+                      {#if SOURCES[r.source]}<img class="mini-ico" src={SOURCES[r.source].ico} alt={SOURCES[r.source].label} title={SOURCES[r.source].label} />{/if}
                       <span class="kb k-{r.kind}">{KIND_LABEL[r.kind] ?? "Autre"}</span>
                       {#if r.lang}<span class="lb">{r.lang.toUpperCase()}</span>{/if}
                       {#if sameTeam(r)}<span class="team" title="Même équipe que ton dernier épisode">★ {prefer}</span>{/if}
@@ -307,7 +421,23 @@
             {/each}
           </ul>
         {:else}
-          <p class="hint">Tape un titre puis Entrée. Clique sur un résultat pour voir son contenu avant de le télécharger.</p>
+          <div class="welcome">
+            <span class="w-ic"><Icon name={GENRES.find((g) => g.id === genre).icon} size={30} /></span>
+            <h3>Que veux-tu télécharger ?</h3>
+            <p class="w-where">
+              Recherche sur
+              {#each targets as id, i}<span class="w-src"><img class="mini-ico" src={SOURCES[id].ico} alt="" />{SOURCES[id].label}</span>{i < targets.length - 2 ? ", " : i === targets.length - 2 ? " et " : ""}{/each}
+            </p>
+            {#if recent.length}
+              <div class="recent">
+                <span class="r-head">Récemment <button class="r-clear" onclick={forgetRecent}>Effacer</button></span>
+                <div class="r-list">
+                  {#each recent as q}<button onclick={() => ((query = q), search())}><Icon name="search" size={12} />{q}</button>{/each}
+                </div>
+              </div>
+            {/if}
+            <p class="w-tip">Clique sur un résultat pour voir ses fichiers avant de le télécharger.</p>
+          </div>
         {/if}
       </div>
 
@@ -413,13 +543,59 @@
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .seg button.on { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
 
-  .bar { display: flex; gap: 8px; align-items: center; padding: 14px 18px; }
-  .field { flex: 1; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--muted); }
-  .field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
-  .field input { flex: 1; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 14px; }
-  .srcs { display: inline-flex; padding: 3px; border-radius: 9px; background: var(--chip); }
-  .srcs button { height: 32px; padding: 0 12px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
-  .srcs button.on { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-sm); }
+  .hero { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px 12px; background: linear-gradient(180deg, var(--accent-soft), transparent); }
+  .bar { display: flex; }
+  .field { flex: 1; display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 5px 0 16px; border-radius: 14px; border: 1.5px solid var(--line-strong); background: var(--surface); color: var(--muted); box-shadow: var(--shadow-sm); transition: border-color 0.15s, box-shadow 0.15s; }
+  .field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--ring); color: var(--accent); }
+  .field input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 15px; }
+  .clear { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; border: 0; background: var(--chip); color: var(--muted); cursor: pointer; }
+  .clear:hover { color: var(--text); }
+  .go { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 16px; border: 0; border-radius: 10px; background: var(--accent); color: white; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; transition: filter 0.12s; }
+  .go:hover:not(:disabled) { filter: brightness(1.08); }
+  .go:disabled { opacity: 0.45; cursor: default; }
+
+  .genres { display: flex; flex-wrap: wrap; gap: 6px; }
+  .genre { --c: var(--accent); display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; transition: background 0.12s, color 0.12s, border-color 0.12s; }
+  .genre:hover { border-color: var(--c); color: var(--c); }
+  .genre.on { background: var(--c); border-color: var(--c); color: white; box-shadow: 0 4px 14px -6px var(--c); }
+  .genre.k-film { --c: #e0457b; }
+  .genre.k-series { --c: #3b82f6; }
+  .genre.k-anime { --c: #f97316; }
+  .genre.k-game { --c: #16a34a; }
+  .genre.k-software { --c: #0891b2; }
+  .genre.k-book { --c: #a16207; }
+  .genre.k-audio { --c: #9333ea; }
+
+  .srcs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .src { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px 0 6px; border-radius: 9px; border: 1px solid transparent; background: var(--chip); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+  .src:hover { border-color: var(--line-strong); }
+  .src.in { background: var(--surface); border-color: var(--line-strong); }
+  .src.on { background: var(--surface); border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 2px var(--ring); }
+  .src-ico { width: 18px; height: 18px; border-radius: 5px; object-fit: contain; flex: none; display: grid; place-items: center; }
+  .src.all .src-ico { background: var(--accent); color: white; }
+  .src-sep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 2px; }
+  .src-n { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 800; display: grid; place-items: center; font-variant-numeric: tabular-nums; }
+  .src-n.err { background: var(--err-soft); color: var(--err); }
+  .mini-ico { width: 14px; height: 14px; border-radius: 3px; object-fit: contain; flex: none; vertical-align: -2px; }
+
+  .notes { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 0 18px 8px; font-size: 12px; color: var(--muted); }
+  .notes > span { display: inline-flex; align-items: center; gap: 6px; }
+  .notes .fail { color: var(--err); }
+
+  .welcome { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; padding: 7vh 20px 20px; color: var(--muted); }
+  .w-ic { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 20px; background: var(--accent-soft); color: var(--accent); margin-bottom: 4px; }
+  .welcome h3 { margin: 0; font-size: 18px; color: var(--text); }
+  .w-where { margin: 0; font-size: 13px; line-height: 1.8; }
+  .w-src { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; color: var(--text-2); }
+  .w-tip { margin: 14px 0 0; font-size: 12px; }
+  .recent { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 620px; }
+  .r-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+  .r-clear { margin-left: 6px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; cursor: pointer; }
+  .r-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+  .r-list button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .r-list button:hover { border-color: var(--accent); color: var(--accent); }
+  .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8vh 20px; color: var(--muted); text-align: center; }
+  .empty b { color: var(--text); font-size: 14px; }
 
   .body { flex: 1; min-height: 0; display: flex; }
   .results { flex: 1; min-width: 0; overflow-y: auto; padding: 4px 10px 10px; }
@@ -507,9 +683,10 @@
   .drop p { margin: 0; color: var(--text); }
   .drop span { color: var(--muted); font-size: 12.5px; }
 
-  .hint { color: var(--muted); font-size: 13px; padding: 20px 10px; margin: 0; display: flex; align-items: center; gap: 10px; }
+  .hint { color: var(--muted); font-size: 13px; padding: 20px 10px; margin: 0; display: flex; align-items: center; gap: 10px; white-space: pre-line; }
   .hint.err { color: var(--err); }
-  .spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+  .spinner.light { border-color: rgb(255 255 255 / 0.35); border-top-color: white; }
+  .spinner { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   footer { padding: 10px 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 </style>
