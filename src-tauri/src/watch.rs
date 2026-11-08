@@ -1,9 +1,13 @@
-//! Épisodes vus / en cours, d'après l'historique de VLC.
+//! Épisodes vus / en cours.
 //!
-//! VLC garde ses 30 derniers fichiers ouverts dans `%APPDATA%\vlc\vlc-qt-interface.ini`
-//! (section `[RecentsMRL]` : `list=` les fichiers, `times=` la position d'arrêt en ms ;
-//! 0 = lu jusqu'au bout, ou à peine commencé). On en garde notre propre historique
-//! (`watched.json`) pour ne rien perdre quand VLC oublie les plus anciens.
+//! Deux sources :
+//! - **la lecture lancée depuis OneForAll** (voir `player.rs`) : position et durée exactes, en direct ;
+//! - **l'historique de VLC** (`%APPDATA%\vlc\vlc-qt-interface.ini`, section `[RecentsMRL]`), pour ce qui a été
+//!   ouvert ailleurs. VLC n'y retient une position qu'entre 5 % et 95 % du fichier : en dessous comme au-dessus
+//!   il écrit 0. Un 0 ne veut donc PAS dire « vu » (un épisode à peine lancé donne aussi 0) : on ne s'en sert
+//!   que si on sait déjà qu'il avait été regardé en grande partie.
+//!
+//! Notre propre historique (`watched.json`) garde tout, même quand VLC oublie les plus anciens.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -19,9 +23,19 @@ pub struct Watch {
     pub watched: bool,
     /// Dernière fois vu (secondes Unix), pour trouver « où j'en suis »
     pub at: i64,
+    /// Durée de l'épisode (ms), connue quand il a été lu depuis OneForAll
+    pub len_ms: i64,
     /// Dernière valeur lue chez VLC : on ne réapplique pas la même (sinon un « non vu » manuel serait écrasé)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlc: Option<i64>,
+    /// Qui l'a renseigné : « vlc » (historique), « app » (lecture suivie), « user » (à la main)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub by: String,
+}
+
+/// Fin de l'épisode atteinte : 90 % passés, ou moins de 90 s restantes (générique, preview)
+pub fn finished(pos_ms: i64, len_ms: i64) -> bool {
+    len_ms > 0 && (pos_ms as f64 >= len_ms as f64 * 0.9 || len_ms - pos_ms <= 90_000)
 }
 
 pub struct Watched {
@@ -65,7 +79,7 @@ fn split_list(s: &str) -> Vec<String> {
 }
 
 /// « file:///D:/Series/A%20B.mkv » → « D:\Series\A B.mkv »
-fn mrl_to_path(mrl: &str) -> Option<String> {
+pub fn mrl_to_path(mrl: &str) -> Option<String> {
     let rest = mrl.strip_prefix("file:///")?;
     Some(crate::search::pct_decode(rest).replace('/', "\\"))
 }
@@ -90,13 +104,35 @@ pub fn parse_ini(ini: &str) -> Vec<(String, i64)> {
     list.iter().enumerate().filter_map(|(i, m)| Some((mrl_to_path(m)?, times.get(i).copied().unwrap_or(0)))).collect()
 }
 
+/// Ce que l'historique de VLC change pour une entrée (None = rien à en tirer).
+fn apply_vlc(e: &mut Watch, ms: i64) -> bool {
+    if ms > 0 {
+        // Arrêté en route (entre 5 % et 95 %)
+        e.watched = e.watched || finished(ms, e.len_ms);
+        e.pos_ms = if e.watched { 0 } else { ms };
+        true
+    } else if e.len_ms > 0 && e.pos_ms * 2 >= e.len_ms {
+        // 0 après une position déjà avancée : VLC est allé au bout
+        e.watched = true;
+        e.pos_ms = 0;
+        true
+    } else {
+        // 0 sans autre indice : à peine commencé OU fini, impossible de savoir → on ne touche à rien
+        false
+    }
+}
+
 impl Watched {
     pub fn new() -> Self {
-        let map = std::fs::read_to_string(store()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let mut map: HashMap<String, Watch> = std::fs::read_to_string(store()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        // Les versions 0.2.13-0.2.14 prenaient le « 0 » de VLC pour « vu » : on annule ces marquages-là
+        for w in map.values_mut().filter(|w| w.by.is_empty() && w.vlc == Some(0) && w.watched) {
+            w.watched = false;
+        }
         Watched { map: Mutex::new(map), mtime: Mutex::new(None) }
     }
 
-    fn save(&self) {
+    pub fn save(&self) {
         if let Ok(json) = serde_json::to_string(&*self.map.lock().unwrap()) {
             let _ = std::fs::create_dir_all(crate::config::data_dir());
             let _ = std::fs::write(store(), json);
@@ -123,15 +159,32 @@ impl Watched {
                     continue;
                 }
                 e.vlc = Some(*ms);
-                e.pos_ms = (*ms).max(0);
-                e.watched = *ms <= 0;
-                // Le premier de la liste est le plus récent
-                e.at = t - i as i64;
                 changed = true;
+                if apply_vlc(e, *ms) {
+                    e.by = "vlc".into();
+                    // Le premier de la liste est le plus récent
+                    e.at = t - i as i64;
+                }
             }
         }
         if changed {
             self.save();
+        }
+    }
+
+    /// Position en direct pendant une lecture lancée depuis OneForAll (ne sauvegarde pas : voir `save`).
+    pub fn progress(&self, path: &str, pos_ms: i64, len_ms: i64) {
+        let mut map = self.map.lock().unwrap();
+        let e = map.entry(key(path)).or_default();
+        e.len_ms = len_ms;
+        e.at = now();
+        e.by = "app".into();
+        if finished(pos_ms, len_ms) {
+            e.watched = true;
+            e.pos_ms = 0;
+        } else if pos_ms > 15_000 {
+            // Déjà vu et revu depuis le début : il reste « vu », mais on garde la position
+            e.pos_ms = pos_ms;
         }
     }
 
@@ -161,6 +214,7 @@ impl Watched {
                 let e = map.entry(key(p)).or_default();
                 e.watched = watched;
                 e.pos_ms = 0;
+                e.by = "user".into();
                 if watched {
                     e.at = t;
                 }
@@ -193,5 +247,20 @@ mod tests {
         let e = parse_ini(ini);
         assert_eq!(e, vec![(r"D:\Series\A B - 01.mkv".to_string(), 0), (r"C:\x,y.mkv".to_string(), 1137634)]);
         assert_eq!(key(r"D:/Series/A.mkv"), key(r"d:\series\a.MKV"));
+    }
+
+    #[test]
+    fn zero_is_not_watched() {
+        // Lancé puis quitté au bout de 30 s : VLC écrit 0 → PAS vu
+        let mut e = Watch::default();
+        assert!(!apply_vlc(&mut e, 0));
+        assert!(!e.watched);
+        // Arrêté à 15 min sur 23 : en cours
+        let mut e = Watch { len_ms: 1_380_000, ..Default::default() };
+        assert!(apply_vlc(&mut e, 900_000) && !e.watched && e.pos_ms == 900_000);
+        // Puis 0 (VLC est allé au-delà de 95 %) : vu
+        assert!(apply_vlc(&mut e, 0) && e.watched);
+        // Fin d'épisode : 22 min sur 23 = vu
+        assert!(finished(1_320_000, 1_380_000) && !finished(600_000, 1_380_000));
     }
 }

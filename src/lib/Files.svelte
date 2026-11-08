@@ -1,6 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
-  import { getFiles, getWatch, openPath, setFilePriority, setWatched, trashTorrentFiles } from "./api.js";
+  import { getFiles, getWatch, openPath, playFiles, setFilePriority, setWatched, trashTorrentFiles } from "./api.js";
   import { fmtSize, isPaused } from "./model.js";
   import { confirmAsk, flash, openMenu } from "./ui.svelte.js";
 
@@ -177,7 +177,15 @@
   }
 
   function open(f) {
-    openPath(fullPath(f)).catch((e) => flash(String(e)));
+    if (!VIDEO.test(f.name)) return openPath(fullPath(f)).catch((e) => flash(String(e)));
+    // Vidéo : lecture suivie dans VLC (vu / en cours, pistes de la série), avec les épisodes suivants déjà
+    // téléchargés à la suite
+    const vids = files.filter((x) => VIDEO.test(x.name));
+    const from = vids.findIndex((x) => x.index === f.index);
+    const next = vids.slice(from + 1).filter((x) => x.priority > 0 && x.progress >= 1);
+    playFiles(torrent.hash, [f, ...next].map(fullPath))
+      .then(loadWatch)
+      .catch((e) => flash(String(e)));
   }
 
   function menu(e, f) {

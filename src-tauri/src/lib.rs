@@ -5,6 +5,7 @@ mod customicon;
 mod direct;
 mod installed;
 mod media;
+mod player;
 mod qbit;
 mod qsetup;
 mod scan;
@@ -796,34 +797,50 @@ fn find_vlc() -> Option<PathBuf> {
 /// Lit les vidéos/musiques cochées et téléchargées, dans l'ordre, dans VLC (en playlist)
 /// ou avec le lecteur par défaut. Renvoie le nombre de fichiers.
 #[tauri::command]
-async fn play(state: State<'_, AppState>, hashes: Vec<String>) -> Result<usize, String> {
+async fn play(app: tauri::AppHandle, state: State<'_, AppState>, hashes: Vec<String>) -> Result<usize, String> {
     let ts = state.qbit.torrents().await?;
     let mut complete = Vec::new();
     let mut partial = Vec::new();
     for h in &hashes {
         let Some(t) = ts.iter().find(|t| &t.hash == h) else { continue };
+        let serie = Media::from_raw(t.clone()).group_key;
         let mut files = state.qbit.files(h).await?;
         files.retain(|f| f.priority > 0 && f.progress > 0.0 && is_media(&f.name));
         files.sort_by(|a, b| nat_cmp(&a.name, &b.name));
         for f in files {
             let p = file_path(&t.save_path, &f);
             if p.is_file() {
-                if f.progress >= 0.999 { complete.push(p) } else { partial.push(p) }
+                let item = player::Item { path: p, series: Some(serie.clone()) };
+                if f.progress >= 0.999 { complete.push(item) } else { partial.push(item) }
             }
         }
     }
     // On lit ce qui est complet ; à défaut, le début de ce qui est en cours.
     let list = if complete.is_empty() { partial } else { complete };
+    start_player(app, list)
+}
+
+/// Lit des fichiers précis d'un torrent (liste des fichiers d'un pack : « Reprendre », double-clic…),
+/// suivis des épisodes suivants déjà téléchargés.
+#[tauri::command]
+async fn play_files(app: tauri::AppHandle, state: State<'_, AppState>, hash: String, paths: Vec<String>) -> Result<usize, String> {
+    let ts = state.qbit.torrents().await?;
+    let serie = ts.iter().find(|t| t.hash == hash).map(|t| Media::from_raw(t.clone()).group_key);
+    let list = paths.into_iter().map(PathBuf::from).filter(|p| p.is_file()).map(|path| player::Item { path, series: serie.clone() }).collect();
+    start_player(app, list)
+}
+
+fn start_player(app: tauri::AppHandle, list: Vec<player::Item>) -> Result<usize, String> {
     if list.is_empty() {
         return Err("Aucune vidéo ou musique téléchargée à lire.".into());
     }
+    let n = list.len();
     match find_vlc() {
-        Some(vlc) => {
-            std::process::Command::new(vlc).args(&list).spawn().map_err(|e| e.to_string())?;
-        }
-        None => explorer(format!("\"{}\"", list[0].display()))?,
+        // VLC suivi : position exacte (vu / en cours) et pistes audio / sous-titres retenues par série
+        Some(vlc) => player::launch(app, &vlc, list)?,
+        None => explorer(format!("\"{}\"", list[0].path.display()))?,
     }
-    Ok(list.len())
+    Ok(n)
 }
 
 fn safe_name(s: &str) -> String {
@@ -1613,6 +1630,7 @@ pub fn run() {
             get_downloads,
             nxbrew_links,
             get_watch,
+            play_files,
             set_watched,
             add_downloads,
             download_action,

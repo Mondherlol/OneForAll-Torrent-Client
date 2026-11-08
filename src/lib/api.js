@@ -47,3 +47,5 @@ export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });
 // Épisodes vus / en cours (historique de VLC)
 export const getWatch = (paths) => invoke("get_watch", { paths });
 export const setWatched = (paths, watched) => invoke("set_watched", { paths, watched });
+// Lecture suivie dans VLC (position exacte, pistes audio / sous-titres retenues par série)
+export const playFiles = (hash, paths) => invoke("play_files", { hash, paths });

@@ -26,7 +26,8 @@ Il faut [qBittorrent](https://www.qbittorrent.org/download) installé (OneForAll
 - 🔎 **Recherche intégrée** : C411 (Torznab), Nyaa, Online-Fix et FitGirl (jeux), NXBrew (Switch, liens hébergeurs), magnet, glisser-déposer de .torrent
 - ⬇️ **Téléchargements directs** (liens https) : onglet dédié, plusieurs connexions par fichier, reprise après coupure ou redémarrage, rangement par type
 - ▶️ **Lecture directe** dans VLC, double-clic pour ouvrir
-- 👁️ **Épisodes vus / en cours** d'après l'historique de VLC, bouton « Reprendre É8 »
+- 👁️ **Épisodes vus / en cours** : lecture suivie dans VLC (position exacte), bouton « Reprendre É8 »
+- 🎧 **Pistes retenues par série** : audio japonais + sous-titres français choisis une fois, remis tout seuls sur les épisodes suivants
 - 🎮 **Jeux & logiciels** : détecte s'ils sont déjà installés (désinstaller, supprimer l'installable), formats consoles (NSP, XCI…)
 - 🩺 **Onglet Sources** : seeders, leechers, trackers, pairs — et pourquoi un torrent est bloqué
 - 🔔 **Notifications Windows** avec l'affiche quand un téléchargement se termine
@@ -44,7 +45,7 @@ npm run tauri dev      # lance l'app en mode développement
 
 Le code : interface en Svelte 5 (`src/`), cœur en Rust (`src-tauri/src/`) :
 `qbit.rs` (API qBittorrent), `media.rs` (reconnaissance des noms), `artwork.rs` (affiches),
-`search.rs` (C411 / Nyaa / Online-Fix / FitGirl / NXBrew), `direct.rs` (téléchargements directs), `watch.rs` (historique VLC), `installed.rs` (programmes installés), `scan.rs` (fichiers .torrent, disques).
+`search.rs` (C411 / Nyaa / Online-Fix / FitGirl / NXBrew), `direct.rs` (téléchargements directs), `watch.rs` (vu / en cours), `player.rs` (lecture suivie dans VLC, pistes par série), `installed.rs` (programmes installés), `scan.rs` (fichiers .torrent, disques).
 
 ## Publier une version
 
