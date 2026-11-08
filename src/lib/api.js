@@ -40,7 +40,7 @@ export const getSchedule = (titles, kind) => invoke("get_schedule", { titles, ki
 export const organizeShows = (groupKey = null) => invoke("organize_shows", { groupKey });
 // Téléchargements directs (liens http) — onglet « Téléchargements »
 export const getDownloads = () => invoke("get_downloads");
-export const addDownloads = (urls, format) => invoke("add_downloads", { urls, format });
+export const addDownloads = (urls, format, section) => invoke("add_downloads", { urls, format, section });
 export const downloadAction = (ids, action) => invoke("download_action", { ids, action });
 export const moveDownloads = (ids, dir) => invoke("move_downloads", { ids, dir });
 export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });

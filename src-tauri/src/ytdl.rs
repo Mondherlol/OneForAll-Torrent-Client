@@ -24,6 +24,7 @@ const HOSTS: &[&str] = &[
     "youtube.com", "youtu.be", "twitter.com", "x.com", "instagram.com", "tiktok.com", "facebook.com", "fb.watch",
     "vimeo.com", "dailymotion.com", "dai.ly", "twitch.tv", "reddit.com", "redd.it", "soundcloud.com", "bilibili.com",
     "streamable.com", "threads.net", "bsky.app", "kick.com", "pinterest.com", "pinterest.fr", "snapchat.com", "bandcamp.com",
+    "open.spotify.com",
 ];
 
 fn host(url: &str) -> String {
@@ -176,7 +177,25 @@ pub async fn ffmpeg(client: &reqwest::Client, note: &(dyn Fn(String) + Sync)) ->
 
 /// Arguments yt-dlp pour un format donné. Les fichiers en cours restent dans `tmp` (reprise après pause / redémarrage)
 /// et n'arrivent dans `dir` qu'une fois terminés.
-pub fn args(url: &str, fmt: &str, dir: &str, tmp: &Path, ffmpeg: &Path) -> Vec<String> {
+pub struct Job<'a> {
+    pub url: &'a str,
+    pub fmt: &'a str,
+    pub dir: &'a str,
+    pub tmp: &'a Path,
+    pub ffmpeg: &'a Path,
+    /// Extrait seulement : (début, fin) en secondes
+    pub section: Option<(u32, u32)>,
+    /// Morceau Spotify : nom de fichier imposé et durée attendue (s)
+    pub track: Option<(&'a str, u32)>,
+}
+
+/// 75 → « 1m15 », 3725 → « 1h02m05 »
+pub fn hms(s: u32) -> String {
+    if s >= 3600 { format!("{}h{:02}m{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}m{:02}", s / 60, s % 60) }
+}
+
+pub fn args(j: &Job) -> Vec<String> {
+    let (url, fmt, dir, tmp, ffmpeg) = (j.url, j.fmt, j.dir, j.tmp, j.ffmpeg);
     let mut a: Vec<String> = [
         "--ignore-config", "--no-update", "--newline", "--no-colors", "-q", "--progress", "--no-playlist", "--no-mtime",
         "--encoding", "utf-8", "--retries", "10", "--fragment-retries", "20", "--embed-metadata",
@@ -193,8 +212,25 @@ pub fn args(url: &str, fmt: &str, dir: &str, tmp: &Path, ffmpeg: &Path) -> Vec<S
     // Sur TikTok / Insta / X, beaucoup de titres se ressemblent (« Video by … ») : l'identifiant évite les collisions
     let h = host(url);
     let plain = ["youtube.com", "youtu.be", "soundcloud.com", "bandcamp.com"].iter().any(|s| h == *s || h.ends_with(&format!(".{s}")));
+    let cut = j.section.map(|(s, e)| format!(" [{}-{}]", hms(s), hms(e))).unwrap_or_default();
+    let name = match j.track {
+        Some((n, _)) => format!("{}{cut}.%(ext)s", n.replace('%', "%%")),
+        None if plain => format!("%(title).150B{cut}.%(ext)s"),
+        None => format!("%(title).120B [%(id)s]{cut}.%(ext)s"),
+    };
     a.push("-o".into());
-    a.push(if plain { "%(title).150B.%(ext)s".into() } else { "%(title).120B [%(id)s].%(ext)s".into() });
+    a.push(name);
+    if let Some((s, e)) = j.section {
+        // Seul l'extrait est téléchargé ; coupe précise à la seconde
+        a.extend(["--download-sections".into(), format!("*{s}-{e}"), "--force-keyframes-at-cuts".into()]);
+    }
+    if let Some((_, secs)) = j.track {
+        // Recherche YouTube : le premier résultat dont la durée colle au morceau
+        a.extend(["--max-downloads".into(), "1".into()]);
+        if secs > 0 {
+            a.extend(["--match-filter".into(), format!("duration>{} & duration<{}", secs.saturating_sub(15), secs + 15)]);
+        }
+    }
     let sort = |res: &str| format!("{res}fps,vcodec:h264,acodec:aac");
     match fmt {
         "mp3" => a.extend(["-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "0", "--embed-thumbnail"].map(String::from)),
@@ -296,6 +332,72 @@ pub fn parse(line: &str) -> Line {
     }
 }
 
+/// Nom du site, affiché tant que le titre n'est pas connu
+pub fn site(url: &str) -> String {
+    let h = host(url);
+    let names = [
+        ("youtu", "YouTube"), ("spotify", "Spotify"), ("twitter", "X"), ("x.com", "X"), ("instagram", "Instagram"), ("tiktok", "TikTok"),
+        ("facebook", "Facebook"), ("fb.watch", "Facebook"), ("soundcloud", "SoundCloud"), ("twitch", "Twitch"), ("reddit", "Reddit"),
+        ("redd.it", "Reddit"), ("vimeo", "Vimeo"), ("dailymotion", "Dailymotion"),
+    ];
+    names.iter().find(|(k, _)| h.contains(k)).map(|(_, n)| n.to_string()).unwrap_or_else(|| h.trim_start_matches("www.").to_string())
+}
+
+// ---------- Spotify (DRM : on retrouve chaque morceau sur YouTube, en MP3) ----------
+
+pub fn is_spotify(url: &str) -> bool {
+    host(url) == "open.spotify.com"
+}
+
+/// (type, id) d'un lien open.spotify.com/(intl-fr/)track|album|playlist/ID
+fn spotify_ref(url: &str) -> Option<(String, String)> {
+    let path = url.split("open.spotify.com/").nth(1)?.split(['?', '#']).next()?;
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty() && !p.starts_with("intl-")).collect();
+    match parts.as_slice() {
+        [t, id, ..] if ["track", "album", "playlist"].contains(t) => Some((t.to_string(), id.to_string())),
+        _ => None,
+    }
+}
+
+pub enum Spotify {
+    /// « Artiste - Titre », durée en secondes
+    Track(String, u32),
+    /// Liens des morceaux
+    List(Vec<String>),
+}
+
+/// Lit la page « embed » publique de Spotify (pas besoin de compte)
+pub async fn spotify(client: &reqwest::Client, url: &str) -> Result<Spotify, String> {
+    let (kind, id) = spotify_ref(url).ok_or("Lien Spotify non pris en charge (morceau, album ou playlist uniquement).")?;
+    let page = client
+        .get(format!("https://open.spotify.com/embed/{kind}/{id}"))
+        .send()
+        .await
+        .map_err(|e| format!("Spotify injoignable : {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json = page
+        .split(r#"<script id="__NEXT_DATA__" type="application/json">"#)
+        .nth(1)
+        .and_then(|s| s.split("</script>").next())
+        .ok_or("Page Spotify illisible")?;
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let e = &v["props"]["pageProps"]["state"]["data"]["entity"];
+    let secs = |d: &serde_json::Value| (d.as_u64().unwrap_or(0) / 1000) as u32;
+    if kind == "track" {
+        let title = e["name"].as_str().or(e["title"].as_str()).ok_or("Morceau Spotify introuvable")?;
+        let artists: Vec<&str> = e["artists"].as_array().map(|a| a.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
+        let name = if artists.is_empty() { title.to_string() } else { format!("{} - {title}", artists.join(", ")) };
+        return Ok(Spotify::Track(name, secs(&e["duration"])));
+    }
+    let urls: Vec<String> = e["trackList"]
+        .as_array()
+        .map(|l| l.iter().filter_map(|t| t["uri"].as_str()?.strip_prefix("spotify:track:").map(|id| format!("https://open.spotify.com/track/{id}"))).collect())
+        .unwrap_or_default();
+    if urls.is_empty() { Err("Playlist Spotify vide ou privée.".into()) } else { Ok(Spotify::List(urls)) }
+}
+
 /// Erreur yt-dlp → (message clair, inutile de réessayer ?)
 pub fn explain(err: &str) -> (String, bool) {
     let e = err.to_lowercase();
@@ -330,6 +432,11 @@ mod tests {
         assert!(!is_media_url("https://example.org/x.zip"));
         assert!(is_playlist_url("https://www.youtube.com/playlist?list=PL1"));
         assert!(!is_playlist_url("https://www.youtube.com/watch?v=a&list=PL1"));
+        assert!(is_spotify("https://open.spotify.com/intl-fr/track/abc?si=1"));
+        assert_eq!(spotify_ref("https://open.spotify.com/intl-fr/track/abc?si=1"), Some(("track".into(), "abc".into())));
+        assert_eq!(spotify_ref("https://open.spotify.com/playlist/xyz"), Some(("playlist".into(), "xyz".into())));
+        assert_eq!(hms(75), "1m15");
+        assert_eq!(hms(3725), "1h02m05");
         assert!(matches!(parse("OFA 1024 2048"), Line::Progress(1024, 2048)));
         assert!(matches!(parse("OFA 1024 NA"), Line::Progress(1024, -1)));
         assert!(matches!(parse("OFAS NA"), Line::Other));

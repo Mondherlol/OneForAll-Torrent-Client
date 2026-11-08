@@ -74,14 +74,24 @@ pub struct Dl {
     /// Étape en cours affichée à la place de l'avancement (installation de ffmpeg, conversion…)
     #[serde(skip)]
     pub note: String,
+    /// Extrait seulement : « début-fin » en secondes (vide = tout)
+    pub section: String,
 }
 
 impl Dl {
     pub fn done(&self) -> i64 {
         self.segs.iter().map(|s| s.done).sum()
     }
+    pub fn section(&self) -> Option<(u32, u32)> {
+        let (a, b) = self.section.split_once('-')?;
+        let (a, b) = (a.parse().ok()?, b.parse().ok()?);
+        (b > a).then_some((a, b))
+    }
     fn display_name(&self) -> String {
-        if self.name.is_empty() {
+        if self.name.is_empty() && !self.media.is_empty() {
+            // Le titre n'arrive qu'après l'analyse : « watch » (fin du lien YouTube) ne veut rien dire
+            if crate::ytdl::is_spotify(&self.url) { "Morceau Spotify…".into() } else { format!("Vidéo {}…", crate::ytdl::site(&self.url)) }
+        } else if self.name.is_empty() {
             file_name_from_url(&self.url).unwrap_or_else(|| self.url.clone())
         } else {
             self.name.clone()
@@ -252,6 +262,16 @@ impl Direct {
     /// Dossiers par type (Réglages), pour ranger chaque fichier selon ce qu'il contient
     pub fn set_folders(&self, folders: BTreeMap<String, String>, split_anime: bool) {
         *self.0.folders.lock().unwrap() = (folders, split_anime);
+    }
+
+    /// Dossier de l'onglet DL (Réglages → Dossiers), sinon Téléchargements
+    fn dl_dir(&self) -> String {
+        self.0.folders.lock().unwrap().0.get("dl").filter(|f| !f.trim().is_empty()).cloned().unwrap_or_else(downloads_dir)
+    }
+
+    pub fn set_section(&self, id: &str, section: &str) {
+        self.update(id, |d| d.section = section.to_string());
+        self.save();
     }
 
     pub fn list(&self) -> Vec<Dl> {
@@ -551,19 +571,10 @@ impl Direct {
         };
         drop(res);
 
-        // Dossier selon le type de fichier (réglages « Dossiers »), sinon Téléchargements
+        // Tout ce qui passe par l'onglet DL va dans le même dossier (Réglages → Dossiers → Onglet DL)
         let dir = {
-            let (folders, split_anime) = self.0.folders.lock().unwrap().clone();
-            let mut kind = crate::media::detect_kind(&name, "").as_str();
-            if kind == "anime" && (!split_anime || folders.get("anime").is_none_or(|f| f.is_empty())) {
-                kind = "series";
-            }
             let existing = self.get(id).map(|d| d.dir).unwrap_or_default();
-            if !existing.is_empty() {
-                existing
-            } else {
-                folders.get(kind).filter(|f| !f.is_empty()).cloned().unwrap_or_else(downloads_dir)
-            }
+            if existing.is_empty() { self.dl_dir() } else { existing }
         };
         std::fs::create_dir_all(&dir).map_err(|e| Fail::Fatal(format!("Dossier « {dir} » inaccessible : {e}")))?;
         let name = unique_name(Path::new(&dir), &name);
@@ -648,8 +659,29 @@ impl Direct {
             return Ok(());
         }
 
-        // Playlist : un téléchargement par élément, celui-ci prend le premier
-        if crate::ytdl::is_playlist_url(&d.url) {
+        // Spotify : une playlist / un album devient un téléchargement par morceau ; un morceau est cherché sur YouTube
+        let mut track: Option<(String, u32)> = None;
+        if crate::ytdl::is_spotify(&d.url) {
+            note("Lecture de Spotify…".into());
+            match crate::ytdl::spotify(&self.0.client, &d.url).await.map_err(Fail::Retry)? {
+                crate::ytdl::Spotify::Track(name, secs) => {
+                    let n = sanitize(&name);
+                    self.update(id, |x| x.name = n.clone());
+                    track = Some((n, secs));
+                }
+                crate::ytdl::Spotify::List(urls) => {
+                    for u in &urls {
+                        let nid = self.add_media(u, "mp3");
+                        self.update(&nid, |x| x.dir = d.dir.clone());
+                    }
+                    // La playlist elle-même disparaît, remplacée par ses morceaux
+                    self.0.list.lock().unwrap().retain(|x| x.id != id);
+                    self.save();
+                    return Ok(());
+                }
+            }
+        } else if crate::ytdl::is_playlist_url(&d.url) {
+            // Playlist : un téléchargement par élément, celui-ci prend le premier
             note("Lecture de la playlist…".into());
             let urls = crate::ytdl::expand(&exe, &d.url).await;
             let Some(first) = urls.first() else {
@@ -664,22 +696,26 @@ impl Direct {
         }
         let d = self.get(id).ok_or(Fail::Fatal("Téléchargement retiré".into()))?;
 
-        let dir = if d.dir.is_empty() {
-            let folders = self.0.folders.lock().unwrap().0.clone();
-            let audio = folders.get("audio").filter(|f| !f.is_empty()).cloned();
-            if d.media == "mp3" { audio.unwrap_or_else(downloads_dir) } else { downloads_dir() }
-        } else {
-            d.dir.clone()
-        };
+        let dir = if d.dir.is_empty() { self.dl_dir() } else { d.dir.clone() };
         std::fs::create_dir_all(&dir).map_err(|e| Fail::Fatal(format!("Dossier « {dir} » inaccessible : {e}")))?;
         let tmp = crate::ytdl::tmp_dir(id);
         let _ = std::fs::create_dir_all(&tmp);
         self.update(id, |x| {
             x.dir = dir.clone();
-            x.note = "Analyse du lien…".into();
+            x.note = if track.is_some() { "Recherche sur YouTube…".into() } else { "Analyse du lien…".into() };
         });
 
-        let args = crate::ytdl::args(&d.url, &d.media, &dir, &tmp, &ff);
+        let search = track.as_ref().map(|(n, _)| format!("ytsearch5:{n}"));
+        let job = crate::ytdl::Job {
+            url: search.as_deref().unwrap_or(&d.url),
+            fmt: if track.is_some() { "mp3" } else { &d.media },
+            dir: &dir,
+            tmp: &tmp,
+            ffmpeg: &ff,
+            section: d.section(),
+            track: track.as_ref().map(|(n, s)| (n.as_str(), *s)),
+        };
+        let args = crate::ytdl::args(&job);
         let (mut child, rx) = crate::ytdl::spawn(&exe, &args).map_err(|e| Fail::Fatal(format!("Lancement de yt-dlp impossible : {e}")))?;
         // Image et son se téléchargent l'un après l'autre : on additionne
         let (mut base, mut cur_done, mut cur_total, mut est) = (0i64, 0i64, 0i64, -1i64);
@@ -697,7 +733,7 @@ impl Direct {
                 got = true;
                 use crate::ytdl::Line;
                 match crate::ytdl::parse(&line) {
-                    Line::Title(t) => {
+                    Line::Title(t) if track.is_none() => {
                         self.update(id, |x| x.name = sanitize(&t));
                     }
                     Line::Thumb(t) => {
@@ -734,7 +770,8 @@ impl Direct {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        let ok = exited.is_some_and(|s| s.success());
+        // 101 : « --max-downloads » atteint (recherche Spotify), c.-à-d. réussi
+        let ok = exited.is_some_and(|s| s.success() || s.code() == Some(101));
         let found = file.as_deref().map(PathBuf::from).filter(|p| p.is_file());
         if let (true, Some(path)) = (ok, found) {
             let len = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
@@ -921,6 +958,38 @@ mod media_tests {
             println!("{fmt}: {:?} « {} » {} o, miniature={} err={}", f.st, f.name, f.size, !f.thumb.is_empty(), f.error);
             assert_eq!(f.st, St::Done);
             assert!(f.final_path().is_file());
+        }
+    }
+}
+
+#[cfg(test)]
+mod media_tests2 {
+    use super::*;
+
+    /// Réseau : cargo test media_extra -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn media_extra() {
+        let dir = std::env::temp_dir().join("oneforall-media-test2");
+        let _ = std::fs::remove_dir_all(&dir);
+        let d = Direct(Arc::new(Inner {
+            list: Mutex::new(Vec::new()),
+            running: Mutex::new(HashMap::new()),
+            folders: Mutex::new((BTreeMap::new(), true)),
+            dirty: AtomicBool::new(false),
+            seq: AtomicU64::new(0),
+            client: reqwest::Client::builder().user_agent(UA).build().unwrap(),
+            persist: false,
+        }));
+        let cut = d.add_media("https://www.youtube.com/watch?v=jNQXAC9IVRw", "720");
+        d.set_section(&cut, "5-12");
+        let sp = d.add_media("https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT", "mp3");
+        for id in [cut, sp] {
+            d.update(&id, |x| x.dir = dir.display().to_string());
+            tauri::async_runtime::block_on(d.run(&id, Arc::new(AtomicBool::new(false))));
+            let f = d.get(&id).unwrap();
+            println!("{:?} « {} » {} o err={}", f.st, f.name, f.size, f.error);
+            assert_eq!(f.st, St::Done);
         }
     }
 }

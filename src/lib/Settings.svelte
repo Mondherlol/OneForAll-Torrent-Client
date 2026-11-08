@@ -324,6 +324,15 @@
             </div>
           {/each}
         </div>
+        <h3 class="dlh">Onglet DL</h3>
+        <p class="hint">Tous les téléchargements de l'onglet DL (fichiers, vidéos, musiques) arrivent ici, quel que soit leur type.</p>
+        <div class="folders">
+          <div class="folder">
+            <span class="fk"><Icon name="download" size={16} />DL</span>
+            <input class="text" bind:value={settings.folders.dl} placeholder="Téléchargements (par défaut)" spellcheck="false" />
+            <button class="btn" onclick={() => browse("dl")}>Parcourir…</button>
+          </div>
+        </div>
         <div class="actions">
           <button class="btn primary" disabled={saving} onclick={save}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
         </div>
@@ -519,6 +528,7 @@
   .switch:checked::after { transform: translateX(17px); }
 
   .folders { display: flex; flex-direction: column; gap: 8px; }
+  .dlh { margin-top: 22px; }
   .folder { display: flex; align-items: center; gap: 10px; }
   .fk { display: inline-flex; align-items: center; gap: 8px; width: 120px; flex: none; font-weight: 600; font-size: 13px; }
   .actions { display: flex; justify-content: flex-end; margin-top: 18px; }

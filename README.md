@@ -25,7 +25,7 @@ Il faut [qBittorrent](https://www.qbittorrent.org/download) installé (OneForAll
 - ✅ **Choix des fichiers à l'ajout** : « les 3 premiers », une saison, tout… avec alerte si le disque est trop petit
 - 🔎 **Recherche intégrée** : C411 (Torznab), Nyaa, Online-Fix et FitGirl (jeux), NXBrew (Switch, liens hébergeurs), magnet, glisser-déposer de .torrent
 - ⬇️ **Téléchargements directs** (liens https) : onglet dédié, plusieurs connexions par fichier, reprise après coupure ou redémarrage, rangement par type
-- 🎬 **Vidéos des sites** (YouTube, X, Instagram, TikTok, SoundCloud…) via yt-dlp : vidéo max / 1080p / 720p ou MP3, playlists dépliées, yt-dlp et ffmpeg installés et mis à jour tout seuls
+- 🎬 **Vidéos des sites** (YouTube, X, Instagram, TikTok, SoundCloud…) via yt-dlp : vidéo max / 1080p / 720p ou MP3, playlists dépliées, extraits (de 1:00 à 2:00 seulement), Spotify (morceaux retrouvés sur YouTube en MP3), yt-dlp et ffmpeg installés et mis à jour tout seuls
 - ▶️ **Lecture directe** dans VLC, double-clic pour ouvrir
 - 👁️ **Épisodes vus / en cours** : lecture suivie dans VLC (position exacte), bouton « Reprendre É8 »
 - 🎧 **Pistes retenues par série** : audio japonais + sous-titres français choisis une fois, remis tout seuls sur les épisodes suivants

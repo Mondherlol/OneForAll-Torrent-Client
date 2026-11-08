@@ -508,6 +508,8 @@ struct DirectView {
     /// Vidéo / musique d'un site (yt-dlp) : format (max, 1080, 720, mp3) et son libellé
     media: String,
     media_label: String,
+    /// Extrait : « 1m00 → 2m00 »
+    section_label: String,
     thumb: String,
     /// Étape en cours (installation de yt-dlp / ffmpeg, analyse, finalisation…)
     note: String,
@@ -538,6 +540,7 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
             DirectView {
                 media: d.media.clone(),
                 media_label: if d.media.is_empty() { String::new() } else { ytdl::label(&d.media).into() },
+                section_label: d.section().map(|(a, b)| format!("{} → {}", ytdl::hms(a), ytdl::hms(b))).unwrap_or_default(),
                 thumb: d.thumb.clone(),
                 note: d.note.clone(),
                 conns: if d.st == direct::St::Running { d.segs.iter().filter(|s| s.end < 0 || s.start + s.done < s.end).count() } else { 0 },
@@ -593,13 +596,27 @@ fn set_watched(state: State<'_, AppState>, paths: Vec<String>, watched: bool) {
     state.watched.set(&paths, watched);
 }
 
+/// `format` : max, 1080, 720, mp3 (vidéos des sites) ; `section` : « début-fin » en secondes pour un extrait
 #[tauri::command]
-fn add_downloads(state: State<'_, AppState>, urls: Vec<String>, format: Option<String>) -> Vec<String> {
+fn add_downloads(state: State<'_, AppState>, urls: Vec<String>, format: Option<String>, section: Option<String>) -> Vec<String> {
     let fmt = format.unwrap_or_else(|| "max".into());
+    let section = section.unwrap_or_default();
     urls.iter()
         .map(|u| u.trim())
         .filter(|u| u.starts_with("http"))
-        .map(|u| if ytdl::is_media_url(u) { state.direct.add_media(u, &fmt) } else { state.direct.add(u) })
+        .map(|u| {
+            if ytdl::is_spotify(u) {
+                state.direct.add_media(u, "mp3")
+            } else if ytdl::is_media_url(u) {
+                let id = state.direct.add_media(u, &fmt);
+                if !section.is_empty() && !ytdl::is_playlist_url(u) {
+                    state.direct.set_section(&id, &section);
+                }
+                id
+            } else {
+                state.direct.add(u)
+            }
+        })
         .collect()
 }
 
@@ -625,7 +642,7 @@ async fn stage(st: &AppState, urls: &[String], paths: &[String]) -> Staged {
             }
         } else if ytdl::is_media_url(u) {
             // YouTube, X, Insta, TikTok… : directement dans l'onglet DL, meilleure qualité
-            out.direct.push(st.direct.add_media(u, "max"));
+            out.direct.push(st.direct.add_media(u, if ytdl::is_spotify(u) { "mp3" } else { "max" }));
         } else if u.starts_with("http") {
             // Lien d'un fichier .torrent (ex. nyaa.si) : on le télécharge pour connaître son contenu
             let client = reqwest::Client::builder().user_agent("OneForAll/0.5").timeout(Duration::from_secs(20)).build();

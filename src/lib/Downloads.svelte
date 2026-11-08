@@ -2,7 +2,7 @@
   import { fly } from "svelte/transition";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { addDownloads, downloadAction, moveDownloads, openPath, reveal } from "./api.js";
+  import { addDownloads, downloadAction, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, wantArt } from "./ui.svelte.js";
 
@@ -34,7 +34,7 @@
   });
 
   // Vidéos / musiques des sites (yt-dlp) : même liste que ytdl.rs
-  const MEDIA_HOSTS = /(^|\.)(youtube\.com|youtu\.be|twitter\.com|x\.com|instagram\.com|tiktok\.com|facebook\.com|fb\.watch|vimeo\.com|dailymotion\.com|dai\.ly|twitch\.tv|reddit\.com|redd\.it|soundcloud\.com|bilibili\.com|streamable\.com|threads\.net|bsky\.app|kick\.com|pinterest\.(com|fr)|snapchat\.com|bandcamp\.com)$/i;
+  const MEDIA_HOSTS = /(^|\.)(youtube\.com|youtu\.be|twitter\.com|x\.com|instagram\.com|tiktok\.com|facebook\.com|fb\.watch|vimeo\.com|dailymotion\.com|dai\.ly|twitch\.tv|reddit\.com|redd\.it|soundcloud\.com|bilibili\.com|streamable\.com|threads\.net|bsky\.app|kick\.com|pinterest\.(com|fr)|snapchat\.com|bandcamp\.com|open\.spotify\.com)$/i;
   const isMedia = (u) => {
     try {
       return MEDIA_HOSTS.test(new URL(u).hostname);
@@ -50,14 +50,35 @@
   ];
   let format = $state(localStorage.getItem("oneforall.dlformat") || "max");
   $effect(() => localStorage.setItem("oneforall.dlformat", format));
-  const hasMedia = $derived(links.split(/\s+/).some(isMedia));
+  const isSpotify = (u) => /^https?:\/\/open\.spotify\.com\//i.test(u);
+  const hasMedia = $derived(links.split(/\s+/).some((u) => isMedia(u) && !isSpotify(u)));
+  const hasSpotify = $derived(links.split(/\s+/).some(isSpotify));
+
+  // Extrait : seulement un passage de la vidéo (ex. de 1:00 à 2:00)
+  let cut = $state(false);
+  let from = $state("");
+  let to = $state("");
+  /** « 1:02:03 », « 1:30 », « 90 » → secondes (NaN si illisible) */
+  const secs = (t) => {
+    const p = t.trim().split(/[:h.,m]/).filter((x) => x !== "");
+    if (!p.length || p.some((x) => !/^\d+$/.test(x))) return NaN;
+    return p.reduce((s, x) => s * 60 + +x, 0);
+  };
+  const section = $derived.by(() => {
+    if (!cut || !hasMedia) return null;
+    const a = secs(from || "0"), b = secs(to);
+    return Number.isFinite(a) && Number.isFinite(b) && b > a ? `${a}-${b}` : "bad";
+  });
 
   async function add() {
     const urls = links.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (!urls.length) return flash("Colle au moins un lien https://…");
+    if (section === "bad") return flash("Extrait : indique un début et une fin valides (ex. 1:00 → 2:30)");
     try {
-      const ids = await addDownloads(urls, format);
+      const ids = await addDownloads(urls, format, section);
       links = "";
+      cut = false;
+      from = to = "";
       flash(ids.length > 1 ? `${ids.length} téléchargements ajoutés` : "Téléchargement ajouté");
       onrefresh();
     } catch (e) {
@@ -103,11 +124,14 @@
   }
 
   const copy = (t) => navigator.clipboard.writeText(t).then(() => flash("Lien copié"));
-  const openItem = (d) => (d.st === "done" ? openPath(d.path) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
+  // Terminé : on ouvre le fichier. Sinon : la vidéo d'origine (pas encore de fichier), ou le dossier.
+  const openItem = (d) =>
+    (d.st === "done" ? openPath(d.path) : d.media ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
 
   function menu(e, d) {
     openMenu(e, [
       d.st === "done" && { label: "Ouvrir", icon: "open", run: () => openPath(d.path).catch((err) => flash(String(err))) },
+      d.media && { label: "Ouvrir la vidéo d'origine", icon: "open", run: () => openUrl(d.url).catch((err) => flash(String(err))) },
       { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(d.path, d.dir).catch((err) => flash(String(err))) },
       "-",
       (d.st === "running" || d.st === "queued") && { label: "Pause", icon: "pause", run: () => act([d], "pause") },
@@ -149,7 +173,20 @@
           <Icon name={f.id === "mp3" ? "audio" : "film"} size={13} />{f.label}
         </button>
       {/each}
+      <span class="vsep"></span>
+      <button class:on={cut} title="Télécharger seulement un passage (inutile de récupérer 3 h pour une minute)" onclick={() => (cut = !cut)}>
+        <Icon name="scissors" size={13} />Extrait
+      </button>
+      {#if cut}
+        <span class="cut" class:bad={section === "bad" && to}>
+          de <input bind:value={from} placeholder="0:00" spellcheck="false" />
+          à <input bind:value={to} placeholder="1:30" spellcheck="false" />
+        </span>
+      {/if}
     </div>
+  {/if}
+  {#if hasSpotify}
+    <p class="sp-note"><Icon name="audio" size={13} />Spotify : chaque morceau est retrouvé sur YouTube et téléchargé en MP3 (playlists et albums compris).</p>
   {/if}
 
   <div class="bar">
@@ -189,9 +226,9 @@
           <div class="main">
             <div class="top">
               <span class="title" title={d.name}>{d.title || d.name}</span>
-              {#if d.media}<span class="kb fmt">{d.media_label}</span>{:else}<span class="kb">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
+              {#if d.media}<span class="kb fmt">{d.media_label}</span>{#if d.section_label}<span class="kb cutb" title="Extrait seulement"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}{:else}<span class="kb">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
             </div>
-            <span class="fname" title={d.url}>{d.name}</span>
+            <span class="fname" title={d.url}>{d.media && d.st !== "done" ? d.url.replace(/^https?:\/\/(www\.)?/, "") : d.name}</span>
             {#if d.st !== "done"}
               <div class="pbar"><span style="width:{pct}%"></span></div>
             {/if}
@@ -257,6 +294,13 @@
   .fmts button { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
   .fmts button:hover { color: var(--text); border-color: var(--accent); }
   .fmts button.on { background: var(--accent); border-color: var(--accent); color: white; }
+  .fmts .vsep { width: 1px; height: 18px; background: var(--line-strong); margin: 0 4px; }
+  .cut { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .cut input { width: 70px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: center; }
+  .cut input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  .cut.bad input { border-color: var(--err); }
+  .kb.cutb { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+  .sp-note { display: flex; align-items: center; gap: 6px; margin: -4px 0 0; font-size: 12.5px; color: var(--muted); }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .top { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .title { font-size: 14px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
