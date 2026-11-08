@@ -693,8 +693,8 @@
       {/each}
       <span class="vsep"></span>
       <button class="chip dlchip" class:on={view === "downloads"} onclick={() => (view = view === "downloads" ? "torrents" : "downloads")} title="Téléchargements directs (liens http)">
-        <Icon name="link" size={15} />
-        <span class="dltxt">Téléchargements</span>
+        <Icon name="download" size={15} />
+        <span class="dltxt">DL</span>
         {#if dlActive}<span class="n">{dlActive}</span>{/if}
       </button>
     </div>
@@ -964,8 +964,8 @@
   .tools { display: flex; align-items: center; gap: 8px; }
   .tools.hidden { visibility: hidden; }
   .vsep { width: 1px; align-self: stretch; margin: 4px 4px; background: var(--line-strong); }
-  .dlchip { gap: 7px; }
-  .dltxt { font-size: 12.5px; font-weight: 650; }
+  .dlchip { gap: 6px; }
+  .dltxt { font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
   .seg { display: flex; padding: 3px; border-radius: 10px; background: var(--chip); }
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: calc(var(--ctl-h) - 6px); padding: 0 11px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 550; cursor: pointer; }
   .seg button:hover { color: var(--text); }
