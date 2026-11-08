@@ -1,10 +1,13 @@
 <script>
   import Icon from "./Icon.svelte";
-  import { getFiles, openPath, setFilePriority, trashTorrentFiles } from "./api.js";
-  import { fmtSize } from "./model.js";
+  import { getFiles, getWatch, openPath, setFilePriority, setWatched, trashTorrentFiles } from "./api.js";
+  import { fmtSize, isPaused } from "./model.js";
   import { confirmAsk, flash, openMenu } from "./ui.svelte.js";
 
-  let { torrent, fill = false, episodes = false } = $props();
+  let { torrent, fill = false, episodes = false, onaction = null } = $props();
+  // Pause / reprise à portée de main, au-dessus de la liste
+  const canToggle = $derived(!!onaction && torrent.progress < 1 && torrent.status !== "error");
+  const paused = $derived(isPaused(torrent.status));
 
   let files = $state([]);
   let loaded = $state(false);
@@ -22,6 +25,7 @@
       const f = await getFiles(torrent.hash);
       if (started < stamp) return;
       files = f.sort((a, b) => collator.compare(a.name, b.name));
+      loadWatch();
     } catch (e) {
       flash(String(e));
     } finally {
@@ -76,6 +80,43 @@
   }
 
   const fullPath = (f) => `${torrent.save_path.replace(/[\\/]+$/, "")}\\${f.name.replaceAll("/", "\\")}`;
+
+  // ---------- vu / en cours (historique de VLC) ----------
+  let watch = $state({});
+  async function loadWatch() {
+    const vids = files.filter((f) => VIDEO.test(f.name));
+    if (!vids.length) return;
+    try {
+      watch = await getWatch(vids.map(fullPath));
+    } catch {}
+  }
+  const w = (f) => watch[fullPath(f)];
+  const fmtPos = (ms) => {
+    const s = Math.floor(ms / 1000);
+    const h = Math.floor(s / 3600);
+    const m = String(Math.floor((s % 3600) / 60)).padStart(h ? 2 : 1, "0");
+    return `${h ? h + ":" : ""}${m}:${String(s % 60).padStart(2, "0")}`;
+  };
+  // Où j'en suis : l'épisode commencé le plus récemment, sinon celui qui suit le dernier vu
+  const resume = $derived.by(() => {
+    const vids = files.filter((f) => VIDEO.test(f.name) && f.priority > 0);
+    const started = vids.filter((f) => w(f)?.pos_ms > 0 && !w(f)?.watched).sort((a, b) => w(b).at - w(a).at)[0];
+    if (started) return { f: started, pos: w(started).pos_ms };
+    let last = -1;
+    vids.forEach((f, i) => w(f)?.watched && (last = i));
+    if (last < 0) return null;
+    const next = vids.slice(last + 1).find((f) => !w(f)?.watched && f.progress > 0);
+    return next ? { f: next, pos: 0 } : null;
+  });
+  const seenCount = $derived(files.filter((f) => w(f)?.watched).length);
+  async function markSeen(list, seen) {
+    try {
+      await setWatched(list.map(fullPath), seen);
+      loadWatch();
+    } catch (e) {
+      flash(String(e));
+    }
+  }
 
   async function setPrio(list, prio) {
     if (!list.length) return;
@@ -140,6 +181,11 @@
       { label: f.priority > 0 ? "Ne pas télécharger" : "Télécharger", icon: f.priority > 0 ? "close" : "down", run: () => setPrio([f], f.priority > 0 ? 0 : 1) },
       { label: "Priorité haute", icon: "up", run: () => setPrio([f], 7), checked: f.priority === 7 },
       { label: "Priorité normale", icon: "list", run: () => setPrio([f], 1), checked: f.priority === 1 },
+      VIDEO.test(f.name) && "-",
+      VIDEO.test(f.name) && (w(f)?.watched
+        ? { label: "Marquer comme pas vu", icon: "eye", run: () => markSeen([f], false) }
+        : { label: "Marquer comme vu", icon: "eye", run: () => markSeen([f], true) }),
+      VIDEO.test(f.name) && { label: "Marquer vus jusqu'ici", icon: "check", run: () => markSeen(shown.slice(0, shown.indexOf(f) + 1).filter((x) => VIDEO.test(x.name)), true) },
     ]);
   }
 </script>
@@ -153,6 +199,13 @@
         <b>{selected.length}</b><span>/{base.length} {unit}</span>
         <em>{fmtSize(selSize)}</em>
       </div>
+      {#if resume}
+        <button class="resume" title="Lancer dans VLC (il reprend là où tu t'es arrêté)" onclick={() => open(resume.f)}>
+          <Icon name="play" size={11} />{resume.pos ? "Reprendre" : "Suivant"} : {pretty(resume.f).ep ?? pretty(resume.f).name}{#if resume.pos}<em>{fmtPos(resume.pos)}</em>{/if}
+        </button>
+      {:else if seenCount}
+        <span class="seen-n"><Icon name="eye" size={12} />{seenCount} vu{seenCount > 1 ? "s" : ""}</span>
+      {/if}
       <span class="spacer"></span>
       {#if hasUnchecked}
         <div class="group" title="Ajouter les suivants au téléchargement">
@@ -168,7 +221,7 @@
       {/if}
     </div>
 
-    {#if files.length > 6 || leftovers.length}
+    {#if files.length > 6 || leftovers.length || canToggle}
       <div class="toolbar sub">
         {#if files.length > 6}
           <label class="search"><Icon name="search" size={13} /><input bind:value={filter} placeholder="Filtrer…" spellcheck="false" /></label>
@@ -179,6 +232,11 @@
           </button>
         {/if}
         <span class="spacer"></span>
+        {#if canToggle}
+          <button class="toggle state" class:hot={paused} onclick={() => onaction(paused ? "resume" : "pause", [torrent])}>
+            <Icon name={paused ? "play" : "pause"} size={12} />{paused ? "Reprendre" : "Pause"}
+          </button>
+        {/if}
         {#if leftovers.length}
           <button class="danger" onclick={freeSpace}><Icon name="trash" size={12} />Libérer {fmtSize(leftSize)}</button>
         {/if}
@@ -190,7 +248,8 @@
         {@const pct = Math.floor(f.progress * 1000) / 10}
         {@const p = pretty(f)}
         {@const done = f.progress >= 1}
-        <li class:off={f.priority === 0} class:done oncontextmenu={(e) => menu(e, f)} ondblclick={() => f.progress > 0 && open(f)}>
+        {@const wf = w(f)}
+        <li class:off={f.priority === 0} class:done class:seen={wf?.watched} oncontextmenu={(e) => menu(e, f)} ondblclick={() => f.progress > 0 && open(f)}>
           <label class="check" title={f.priority > 0 ? "Ne pas télécharger" : "Télécharger"}>
             <input type="checkbox" checked={f.priority > 0} onclick={(e) => clickBox(e, f)} />
             <span class="box"><Icon name="check" size={12} /></span>
@@ -203,6 +262,11 @@
             {/if}
           </div>
           <span class="meta">
+            {#if wf?.watched}
+              <span class="wbadge seen" title="Vu (d'après VLC)"><Icon name="eye" size={11} />Vu</span>
+            {:else if wf?.pos_ms > 0}
+              <span class="wbadge mid" title="Arrêté à {fmtPos(wf.pos_ms)} dans VLC"><Icon name="pause" size={9} />{fmtPos(wf.pos_ms)}</span>
+            {/if}
             {#if done}
               <span class="ok"><Icon name="check" size={12} /></span>{fmtSize(f.size)}
             {:else}
@@ -239,6 +303,15 @@
   .search input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 12px; }
   .toggle, .danger { display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
   .toggle.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .resume { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; margin-left: 10px; border-radius: 8px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  .resume:hover { filter: brightness(1.1); }
+  .resume em { font-style: normal; font-weight: 600; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .seen-n { display: inline-flex; align-items: center; gap: 5px; margin-left: 10px; font-size: 12px; color: var(--muted); }
+  .wbadge { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .wbadge.seen { background: rgb(22 163 74 / 0.12); color: var(--ok); }
+  .wbadge.mid { background: rgb(245 158 11 / 0.15); color: #d97706; }
+  li.seen .name { opacity: 0.55; }
+  .state.hot { color: #b45309; border-color: rgb(245 158 11 / 0.45); background: rgb(245 158 11 / 0.12); }
   .danger { color: var(--err); border-color: rgb(225 29 72 / 0.3); }
   .danger:hover { background: var(--err-soft); }
 

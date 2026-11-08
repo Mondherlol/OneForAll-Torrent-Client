@@ -42,8 +42,8 @@ pub fn enrich(mut r: SearchResult) -> SearchResult {
     r.kind = m.kind.as_str().to_string();
     r.art_key = m.group_key.clone();
     r.year = m.year;
-    if r.source == "online-fix" {
-        // online-fix ne publie que des jeux
+    if matches!(r.source, "online-fix" | "fitgirl" | "nxbrew") {
+        // Sites qui ne publient que des jeux
         let mut m = m;
         m.set_kind(crate::media::Kind::Game);
         r.kind = m.kind.as_str().to_string();
@@ -243,6 +243,192 @@ async fn torznab_once(client: &Client, base: &str, key: &str, mut params: Vec<(&
     Ok(out)
 }
 
+fn blank(source: &'static str) -> SearchResult {
+    SearchResult {
+        title: String::new(),
+        url: String::new(),
+        page: String::new(),
+        date: String::new(),
+        seeders: -1,
+        leechers: -1,
+        downloads: 0,
+        hash: String::new(),
+        category: "Jeux".into(),
+        size: 0,
+        trusted: false,
+        source,
+        clean: String::new(),
+        kind: String::new(),
+        art_key: String::new(),
+        year: None,
+        lang: String::new(),
+        category_id: String::new(),
+    }
+}
+
+/// Le titre affiché garde la version (« Hollow Knight – v1.5 + DLC »), l'affiche se cherche sur le nom seul.
+fn enrich_game(mut r: SearchResult, art_name: &str) -> SearchResult {
+    let full = std::mem::replace(&mut r.title, art_name.to_string());
+    let mut r = enrich(r);
+    r.title = full;
+    r
+}
+
+static RE_TAGS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<[^>]+>").unwrap());
+fn strip_tags(s: &str) -> String {
+    decode(RE_TAGS.replace_all(s, " ").split_whitespace().collect::<Vec<_>>().join(" ").trim())
+}
+
+static RE_MAGNET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"magnet:\?xt=urn:btih:[^"'<\s]+"#).unwrap());
+static RE_BTIH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)btih:([0-9a-z]+)").unwrap());
+static RE_FG_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)Repack Size:\s*(?:<[^>]+>\s*)*(?:from\s+)?([\d.,]+)\s*([KMGT]B)").unwrap());
+
+/// FitGirl Repacks (jeux PC compressés) : API WordPress du site, magnet dans le contenu de chaque article.
+pub async fn fitgirl(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let res = client
+        .get("https://fitgirl-repacks.site/wp-json/wp/v2/posts")
+        .query(&[("search", query), ("per_page", "20"), ("_fields", "title,link,date,content")])
+        .send()
+        .await
+        .map_err(|e| format!("fitgirl-repacks.site injoignable : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("FitGirl a répondu {}", res.status()));
+    }
+    let posts: Vec<serde_json::Value> = res.json().await.map_err(|e| format!("Réponse FitGirl illisible : {e}"))?;
+    Ok(posts
+        .iter()
+        .filter_map(|p| {
+            let html = p["content"]["rendered"].as_str()?;
+            let magnet = decode(RE_MAGNET.find(html)?.as_str());
+            let title = strip_tags(p["title"]["rendered"].as_str().unwrap_or_default());
+            let size = RE_FG_SIZE.captures(html).map(|c| parse_size(&format!("{} {}", c[1].replace(',', "."), &c[2]))).unwrap_or(0);
+            let hash = RE_BTIH.captures(&magnet).map(|c| c[1].to_lowercase()).filter(|h| h.len() == 40).unwrap_or_default();
+            let name = title.split([',', '–', '+', '(']).next().unwrap_or(&title).trim().to_string();
+            let r = SearchResult {
+                title,
+                url: magnet,
+                page: p["link"].as_str().unwrap_or_default().to_string(),
+                date: p["date"].as_str().unwrap_or_default().to_string(),
+                hash,
+                size,
+                trusted: true,
+                ..blank("fitgirl")
+            };
+            Some(enrich_game(r, &name))
+        })
+        .collect())
+}
+
+static RE_NX_TITLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<h2 class="post-title">\s*<a href="([^"]+)"[^>]*>(.*?)</a>"#).unwrap());
+static RE_NX_DATE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<div class="post-date">\s*(?:<i[^>]*></i>)?\s*([^<]+)<"#).unwrap());
+static RE_NX_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)Title Size:\s*([\d.,]+)\s*([KMGT]B)").unwrap());
+static RE_NX_PLATFORM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\s*(\[[^\]]*\]|\bSwitch 2\b|\bNSP\b|\bXCI\b|\+ *Update.*$|\+ *DLC.*$)").unwrap());
+
+/// NXBrew (jeux Switch) : les fichiers sont sur des hébergeurs (1fichier, DataNodes…), derrière des liens ouo.io.
+/// La recherche donne les jeux ; les liens s'affichent dans l'aperçu (voir `nxbrew_links`).
+pub async fn nxbrew(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let res = client.get("https://nxbrew.net/").query(&[("s", query)]).send().await.map_err(|e| format!("nxbrew.net injoignable : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("nxbrew.net a répondu {} (le site bloque parfois les connexions automatiques)", res.status()));
+    }
+    let html = res.text().await.map_err(|e| e.to_string())?;
+    let games: Vec<(String, String, String)> = html
+        .split("<article")
+        .skip(1)
+        .filter_map(|a| {
+            let t = RE_NX_TITLE.captures(a)?;
+            let date = RE_NX_DATE.captures(a).map(|c| c[1].trim().to_string()).unwrap_or_default();
+            Some((t[1].to_string(), strip_tags(&t[2]), date))
+        })
+        .take(15)
+        .collect();
+    // La taille n'est que sur la page du jeu : on les lit en parallèle
+    let tasks: Vec<_> = games
+        .into_iter()
+        .map(|(page, title, date)| {
+            let client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                let size = match client.get(&page).send().await {
+                    Ok(r) => r.text().await.ok().and_then(|h| RE_NX_SIZE.captures(&h).map(|c| parse_size(&format!("{} {}", c[1].replace(',', "."), &c[2])))),
+                    Err(_) => None,
+                };
+                let name = RE_NX_PLATFORM.replace_all(&title, "").trim().to_string();
+                let r = SearchResult { title, url: page.clone(), page, date, size: size.unwrap_or(0), ..blank("nxbrew") };
+                enrich_game(r, &name)
+            })
+        })
+        .collect();
+    let mut out = Vec::new();
+    for t in tasks {
+        if let Ok(r) = t.await {
+            out.push(r);
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Serialize, Debug)]
+pub struct NxLink {
+    pub label: String,
+    pub url: String,
+}
+#[derive(Serialize, Debug)]
+pub struct NxHost {
+    pub host: String,
+    pub links: Vec<NxLink>,
+}
+#[derive(Serialize, Debug)]
+pub struct NxSection {
+    /// « Base Game ROM (21.5 GB) », « Update v1.2 », nom du DLC…
+    pub label: String,
+    pub hosts: Vec<NxHost>,
+}
+
+const DL_HOSTS: &[&str] = &["ouo.io", "ouo.press", "1fichier.com", "datanodes.to", "multiup.", "filekeeper", "gofile.io", "buzzheavier", "mediafire.com", "pixeldrain"];
+static RE_P: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<p[^>]*>(.*?)</p>").unwrap());
+static RE_STRONG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<strong>(.*?)</strong>").unwrap());
+static RE_A: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<a [^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>"#).unwrap());
+
+/// Liens de téléchargement d'une page NXBrew, par partie (jeu, mise à jour, DLC) et par hébergeur.
+pub fn nxbrew_sections(html: &str) -> Vec<NxSection> {
+    let mut out = Vec::new();
+    for block in html.split(r#"class="wp-block-columns "#).skip(1) {
+        let block = block.split(r#"class="wp-block-columns "#).next().unwrap_or(block);
+        let Some(label) = RE_STRONG.captures(block).map(|c| strip_tags(&c[1])) else { continue };
+        if !["Base Game", "Update", "DLC", "ROM"].iter().any(|k| label.contains(k)) {
+            continue;
+        }
+        let mut hosts: Vec<NxHost> = Vec::new();
+        for p in RE_P.captures_iter(block) {
+            let p = &p[1];
+            let links: Vec<(String, String)> = RE_A
+                .captures_iter(p)
+                .map(|a| (decode(&a[1]), strip_tags(&a[2])))
+                // Seulement les liens de téléchargement (pas les tags, articles liés, GitHub…)
+                .filter(|(u, _)| DL_HOSTS.iter().any(|h| u.contains(h)))
+                .collect();
+            if links.is_empty() {
+                continue;
+            }
+            match RE_STRONG.captures(p).map(|c| strip_tags(&c[1])) {
+                // « <strong>1Fichier</strong> Part1, Part2 »
+                Some(host) if host != label => hosts.push(NxHost { host, links: links.into_iter().map(|(url, label)| NxLink { label, url }).collect() }),
+                Some(_) => {}
+                // « <a>DataNodes</a> <a>1Fichier</a> » : un lien par hébergeur
+                None => {
+                    for (url, host) in links {
+                        hosts.push(NxHost { host, links: vec![NxLink { label: "Télécharger".into(), url }] });
+                    }
+                }
+            }
+        }
+        if !hosts.is_empty() {
+            out.push(NxSection { label, hosts });
+        }
+    }
+    out
+}
+
 /// Le site online-fix est en windows-1251 (reqwest est compilé sans décodage des jeux de caractères).
 fn cp1251(bytes: &[u8]) -> String {
     bytes
@@ -258,7 +444,7 @@ fn cp1251(bytes: &[u8]) -> String {
         .collect()
 }
 
-fn pct_decode(s: &str) -> String {
+pub fn pct_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -386,6 +572,27 @@ mod tests {
         let l = r#"<a href="Valheim.v1.0.21-OFME.torrent">Valheim.v1.0.21-OFME.torrent</a>                       04-Nov-2026 15:20     85K"#;
         let c = super::RE_OF_FILE.captures(l).unwrap();
         assert_eq!((&c[1], &c[3]), ("Valheim.v1.0.21-OFME.torrent", "Nov"));
+    }
+
+    /// Réseau : cargo test games_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn games_live() {
+        let client = reqwest::Client::builder().user_agent("OneForAll/0.4").build().unwrap();
+        let fg = tauri::async_runtime::block_on(super::fitgirl(&client, "hollow knight")).unwrap();
+        for r in fg.iter().take(4) {
+            println!("FG {} | {} | {} | {} | {}", r.title, r.clean, r.kind, r.size, r.hash);
+        }
+        assert!(fg.iter().any(|r| r.url.starts_with("magnet:") && r.kind == "game"));
+        let nx = tauri::async_runtime::block_on(super::nxbrew(&client, "mario kart")).unwrap();
+        for r in nx.iter().take(4) {
+            println!("NX {} | {} | {} | {}", r.title, r.clean, r.size, r.page);
+        }
+        assert!(!nx.is_empty());
+        let html = tauri::async_runtime::block_on(async { client.get(&nx[0].page).send().await.unwrap().text().await.unwrap() });
+        for s in super::nxbrew_sections(&html) {
+            println!("  [{}] {}", s.label, s.hosts.iter().map(|h| format!("{}×{}", h.host, h.links.len())).collect::<Vec<_>>().join(", "));
+        }
     }
 
     /// Réseau : cargo test online_fix_live -- --ignored --nocapture

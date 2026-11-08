@@ -38,3 +38,12 @@ export const getCustomIcon = () => invoke("get_custom_icon");
 export const previewTorrent = (url) => invoke("preview_torrent", { url });
 export const getSchedule = (titles, kind) => invoke("get_schedule", { titles, kind });
 export const organizeShows = (groupKey = null) => invoke("organize_shows", { groupKey });
+// Téléchargements directs (liens http) — onglet « Téléchargements »
+export const getDownloads = () => invoke("get_downloads");
+export const addDownloads = (urls) => invoke("add_downloads", { urls });
+export const downloadAction = (ids, action) => invoke("download_action", { ids, action });
+export const moveDownloads = (ids, dir) => invoke("move_downloads", { ids, dir });
+export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });
+// Épisodes vus / en cours (historique de VLC)
+export const getWatch = (paths) => invoke("get_watch", { paths });
+export const setWatched = (paths, watched) => invoke("set_watched", { paths, watched });

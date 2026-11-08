@@ -12,6 +12,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { stageTorrents, qbitStatus, setupQbit, openUrl, getCustomIcon, organizeShows } from "./lib/api.js";
   import PickFiles from "./lib/PickFiles.svelte";
+  import Downloads from "./lib/Downloads.svelte";
+  import { getDownloads } from "./lib/api.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
 
@@ -66,6 +68,20 @@
   $effect(() => localStorage.setItem("oneforall.prefs", JSON.stringify(prefs)));
 
   let torrents = $state([]);
+  // Téléchargements directs (liens http), affichés dans leur propre onglet
+  let downloads = $state([]);
+  let view = $state("torrents");
+  async function refreshDownloads() {
+    try {
+      downloads = await getDownloads();
+    } catch {}
+  }
+  $effect(() => {
+    if (view !== "downloads") return;
+    const id = setInterval(() => !document.hidden && refreshDownloads(), 1000);
+    return () => clearInterval(id);
+  });
+  const dlActive = $derived(downloads.filter((d) => d.st === "running" || d.st === "queued" || d.st === "paused").length);
   let categories = $state([]);
   let disks = $state([]);
   let loaded = $state(false);
@@ -87,6 +103,10 @@
   let pickHidden = $state(false);
   function onStaged(res) {
     if (res.errors?.length) flash(res.errors[0]);
+    if (res.direct?.length) {
+      flash(res.direct.length > 1 ? `${res.direct.length} liens directs ajoutés à l'onglet Téléchargements` : "Lien direct ajouté à l'onglet Téléchargements");
+      refreshDownloads();
+    }
     if (res.hashes?.length) staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];
     refresh();
   }
@@ -174,6 +194,7 @@
 
   async function refresh() {
     const started = Date.now();
+    refreshDownloads();
     try {
       const t = await getTorrents();
       if (started < actionStamp) return;
@@ -247,7 +268,7 @@
     return buildGroups(torrents, true).find((g) => g.key === selectedKey) ?? null;
   });
   const selItems = $derived(visible.filter((g) => sel.has(g.key)).flatMap((g) => g.items));
-  const totals = $derived(torrents.reduce((a, t) => ({ dl: a.dl + t.dlspeed, up: a.up + t.upspeed }), { dl: 0, up: 0 }));
+  const totals = $derived(torrents.reduce((a, t) => ({ dl: a.dl + t.dlspeed, up: a.up + t.upspeed }), { dl: downloads.reduce((s, d) => s + d.speed, 0), up: 0 }));
   const allPaused = $derived(torrents.length > 0 && torrents.every((t) => isPaused(t.status) || t.status === "error"));
 
   // Disques utilisés par les torrents
@@ -663,15 +684,21 @@
     <div class="chips">
       {#each KINDS as k, i}
         {#if k.id === "all" || kindCounts[k.id] || prefs.kind === k.id}
-          <button class="chip" class:on={prefs.kind === k.id} onclick={() => (prefs.kind = k.id)} title="{k.label} (raccourci : {i + 1})">
+          <button class="chip" class:on={view === "torrents" && prefs.kind === k.id} onclick={() => ((prefs.kind = k.id), (view = "torrents"))} title="{k.label} (raccourci : {i + 1})">
             <Icon name={k.id} size={15} />
             <span class="n">{kindCounts[k.id] ?? 0}</span>
           </button>
         {/if}
       {/each}
+      <span class="vsep"></span>
+      <button class="chip dlchip" class:on={view === "downloads"} onclick={() => (view = view === "downloads" ? "torrents" : "downloads")} title="Téléchargements directs (liens http)">
+        <Icon name="link" size={15} />
+        <span class="dltxt">Téléchargements</span>
+        {#if dlActive}<span class="n">{dlActive}</span>{/if}
+      </button>
     </div>
 
-    <div class="tools">
+    <div class="tools" class:hidden={view === "downloads"}>
       <div class="seg">
         {#each STATUS_FILTERS as f}
           <button class:on={prefs.status === f.id} class:warn={f.id === "error" && statusCounts.error > 0} onclick={() => (prefs.status = f.id)}>
@@ -691,7 +718,9 @@
   </nav>
 
   <main bind:this={mainEl} onpointerdown={bandDown} onpointermove={bandMove} onpointerup={bandUp} onpointercancel={bandUp}>
-    {#if booting && !torrents.length}
+    {#if view === "downloads"}
+      <Downloads {downloads} onrefresh={refreshDownloads} />
+    {:else if booting && !torrents.length}
       <!-- Écran de démarrage : qBittorrent se lance en arrière-plan -->
       <div class="boot" in:fade={{ duration: 200 }}>
         <div class="boot-logo">
@@ -932,6 +961,10 @@
   .n { font-size: 11px; font-weight: 700; opacity: 0.6; font-variant-numeric: tabular-nums; }
 
   .tools { display: flex; align-items: center; gap: 8px; }
+  .tools.hidden { visibility: hidden; }
+  .vsep { width: 1px; align-self: stretch; margin: 4px 4px; background: var(--line-strong); }
+  .dlchip { gap: 7px; }
+  .dltxt { font-size: 12.5px; font-weight: 650; }
   .seg { display: flex; padding: 3px; border-radius: 10px; background: var(--chip); }
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: calc(var(--ctl-h) - 6px); padding: 0 11px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 550; cursor: pointer; }
   .seg button:hover { color: var(--text); }

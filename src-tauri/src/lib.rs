@@ -2,6 +2,7 @@ mod artwork;
 mod assoc;
 mod config;
 mod customicon;
+mod direct;
 mod installed;
 mod media;
 mod qbit;
@@ -9,6 +10,7 @@ mod qsetup;
 mod scan;
 mod schedule;
 mod search;
+mod watch;
 
 use artwork::{Art, Artwork};
 use config::{category_for, Config, Settings};
@@ -31,6 +33,10 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct AppState {
     qbit: Qbit,
+    /// Téléchargements directs (liens http)
+    direct: direct::Direct,
+    /// Épisodes vus / en cours (historique de VLC)
+    watched: watch::Watched,
     cfg: Mutex<Config>,
     art: Artwork,
     schedules: schedule::Schedules,
@@ -38,6 +44,8 @@ struct AppState {
     seen: Mutex<Option<HashSet<String>>>,
     /// Séries pour lesquelles le mode séquentiel a déjà été réglé
     seq_done: Mutex<HashSet<String>>,
+    /// Packs d'épisodes : hash → fichier mis en priorité maximale (-1 = aucun encore)
+    boosted: Mutex<HashMap<String, i64>>,
     /// hash → (taille sélectionnée, fichiers cochés, fichiers au total)
     file_counts: Mutex<HashMap<String, (i64, u32, u32)>>,
     /// hash → type déduit du contenu (ex. un dossier rempli de .cbr = livre)
@@ -94,7 +102,13 @@ struct ContentInfo {
     format: Option<String>,
     /// ex. « Switch »
     platform: Option<String>,
+    /// Type deviné d'après les vidéos, quand le NOM ne dit rien (« Ao no Hako » → série)
+    fallback: Option<Kind>,
 }
+
+/// Numéro d'épisode dans un nom de fichier : « 01. Titre », « Titre - 12 », « E05 », « Ep 3 »
+static RE_EP_NUM: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)(^\d{1,3}\b|[\s._-]\d{1,3}(?:v\d)?$|\b(?:e|ep|episode)\s?\d{1,4}\b|\s-\s\d{1,4}\b)").unwrap());
 
 /// Ce que contient vraiment le torrent : surtout des BD/livres → livre, surtout de l'audio → audio,
 /// des fichiers de console (.nsp, .xci…) → jeu console (pas d'installation Windows).
@@ -111,7 +125,7 @@ fn content_info(files: &[TorrentFile]) -> ContentInfo {
         .filter(|(_, _, s)| *s as f64 > total as f64 * 0.3)
         .max_by_key(|(_, _, s)| *s);
     if let Some((ext, platform, _)) = console {
-        return ContentInfo { kind: Some(Kind::Game), format: Some(ext.to_uppercase()), platform: Some(platform.into()) };
+        return ContentInfo { kind: Some(Kind::Game), format: Some(ext.to_uppercase()), platform: Some(platform.into()), fallback: None };
     }
     let (book, audio, video) = (share(BOOK_EXT), share(AUDIO_EXT), share(VIDEO_EXT));
     let kind = if book > 0.5 {
@@ -121,7 +135,19 @@ fn content_info(files: &[TorrentFile]) -> ContentInfo {
     } else {
         None
     };
-    ContentInfo { kind, ..Default::default() }
+    // Plusieurs vidéos numérotées (« 01. Titre.mkv ») = épisodes ; une seule grosse vidéo = film
+    let videos: Vec<&TorrentFile> = files.iter().filter(|f| is_video(&f.name) && f.size > 50 * 1024 * 1024).collect();
+    let numbered = videos.iter().filter(|f| RE_EP_NUM.is_match(Path::new(&f.name).file_stem().map(|s| s.to_string_lossy()).as_deref().unwrap_or(""))).count();
+    let fallback = if video < 0.5 {
+        None
+    } else if videos.len() >= 2 && numbered * 2 > videos.len() {
+        Some(Kind::Series)
+    } else if videos.len() == 1 {
+        Some(Kind::Film)
+    } else {
+        None
+    };
+    ContentInfo { kind, fallback, ..Default::default() }
 }
 
 /// Tri « naturel » : « E2 » avant « E10 ».
@@ -198,6 +224,8 @@ async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<Media>, String> 
             }
         };
         if let Some(k) = info.kind.filter(|k| *k != m.kind) {
+            m.set_kind(k);
+        } else if let Some(k) = info.fallback.filter(|_| m.kind == Kind::Other) {
             m.set_kind(k);
         }
         m.format = info.format.or(m.format.take());
@@ -379,8 +407,25 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
             search::torznab(&client, "https://c411.org", &cfg.c411_key, query.trim(), "c411", ids).await
         }
         "online-fix" => search::online_fix(&client, query.trim()).await,
+        "fitgirl" => search::fitgirl(&client, query.trim()).await,
+        "nxbrew" => search::nxbrew(&client, query.trim()).await,
         _ => search::nyaa(&client, query.trim()).await,
     }
+}
+
+/// Liens d'hébergeurs d'une page NXBrew (jeu, mise à jour, DLC).
+#[tauri::command]
+async fn nxbrew_links(page: String) -> Result<Vec<search::NxSection>, String> {
+    if !page.starts_with("https://nxbrew.net/") {
+        return Err("Lien NXBrew invalide".into());
+    }
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let res = client.get(&page).send().await.map_err(|e| format!("nxbrew.net injoignable : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("nxbrew.net a répondu {}", res.status()));
+    }
+    let html = res.text().await.map_err(|e| e.to_string())?;
+    Ok(search::nxbrew_sections(&html))
 }
 
 #[derive(Serialize)]
@@ -414,11 +459,124 @@ struct Staged {
     /// Torrents ajoutés SANS démarrer : l'interface propose de choisir les fichiers, puis les lance
     hashes: Vec<String>,
     errors: Vec<String>,
+    /// Liens ajoutés comme téléchargements directs (onglet Téléchargements)
+    direct: Vec<String>,
+}
+
+/// Un lien http mène-t-il (peut-être) à un .torrent ? Sinon, inutile de télécharger la réponse pour vérifier.
+fn looks_like_torrent(url: &str, r: &reqwest::Response) -> bool {
+    let h = |k: reqwest::header::HeaderName| r.headers().get(k).map(|v| String::from_utf8_lossy(v.as_bytes()).to_lowercase()).unwrap_or_default();
+    let ctype = h(reqwest::header::CONTENT_TYPE);
+    if ctype.contains("bittorrent") || h(reqwest::header::CONTENT_DISPOSITION).contains(".torrent") || url.to_lowercase().split('?').next().unwrap_or("").ends_with(".torrent") {
+        return true;
+    }
+    // Petit fichier binaire sans indication : on le lit pour vérifier (un .torrent pèse rarement plus de 10 Mo)
+    !ctype.starts_with("text/html") && r.content_length().is_some_and(|l| l < 10 * 1024 * 1024)
+}
+
+// ---------- téléchargements directs ----------
+
+#[derive(Serialize)]
+struct DirectView {
+    id: String,
+    url: String,
+    name: String,
+    title: String,
+    kind: Kind,
+    art_key: String,
+    year: Option<u32>,
+    season: Option<u32>,
+    episode: Option<u32>,
+    dir: String,
+    path: String,
+    size: i64,
+    done: i64,
+    progress: f64,
+    speed: i64,
+    eta: i64,
+    /// queued, running, paused, done, error
+    st: direct::St,
+    retrying: bool,
+    error: String,
+    resumable: bool,
+    conns: usize,
+    added_on: i64,
+    completion_on: i64,
+}
+
+#[tauri::command]
+fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
+    let split = state.cfg().split_anime;
+    let mut out: Vec<DirectView> = state
+        .direct
+        .list()
+        .into_iter()
+        .map(|d| {
+            let raw = d.raw();
+            let mut m = Media::from_raw(raw.clone());
+            if m.kind == Kind::Anime && !split {
+                m.kind = Kind::Series;
+            }
+            DirectView {
+                conns: if d.st == direct::St::Running { d.segs.iter().filter(|s| s.end < 0 || s.start + s.done < s.end).count() } else { 0 },
+                id: d.id,
+                url: d.url,
+                name: raw.name,
+                title: m.title,
+                kind: m.kind,
+                art_key: m.group_key,
+                year: m.year,
+                season: m.season,
+                episode: m.episode,
+                dir: d.dir,
+                path: raw.content_path,
+                size: raw.size,
+                done: raw.completed,
+                progress: raw.progress,
+                speed: raw.dlspeed,
+                eta: raw.eta,
+                st: d.st,
+                retrying: d.retrying,
+                error: d.error,
+                resumable: d.resumable,
+                added_on: d.added_on,
+                completion_on: d.completion_on,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.added_on.cmp(&a.added_on));
+    out
+}
+
+/// Vu / en cours pour chaque fichier (clé = chemin demandé).
+#[tauri::command]
+fn get_watch(state: State<'_, AppState>, paths: Vec<String>) -> HashMap<String, watch::Watch> {
+    state.watched.get(&paths)
+}
+
+#[tauri::command]
+fn set_watched(state: State<'_, AppState>, paths: Vec<String>, watched: bool) {
+    state.watched.set(&paths, watched);
+}
+
+#[tauri::command]
+fn add_downloads(state: State<'_, AppState>, urls: Vec<String>) -> Vec<String> {
+    urls.iter().map(|u| u.trim()).filter(|u| u.starts_with("http")).map(|u| state.direct.add(u)).collect()
+}
+
+#[tauri::command]
+async fn download_action(state: State<'_, AppState>, ids: Vec<String>, action: String) -> Result<(), String> {
+    state.direct.action(&ids, &action).await
+}
+
+#[tauri::command]
+async fn move_downloads(state: State<'_, AppState>, ids: Vec<String>, dir: String) -> Result<(), String> {
+    state.direct.set_dir(&ids, &dir).await
 }
 
 /// Ajoute des torrents (liens magnet, liens .torrent, fichiers .torrent) sans les démarrer.
 async fn stage(st: &AppState, urls: &[String], paths: &[String]) -> Staged {
-    let mut out = Staged { hashes: Vec::new(), errors: Vec::new() };
+    let mut out = Staged { hashes: Vec::new(), errors: Vec::new(), direct: Vec::new() };
     let add_bytes = |name: String, bytes: Vec<u8>| async move { (scan::infohash(&bytes), st.qbit.add_file(&name, bytes, true).await) };
     for u in urls.iter().map(|u| u.trim()).filter(|u| !u.is_empty()) {
         if u.to_lowercase().starts_with("magnet:") {
@@ -434,7 +592,15 @@ async fn stage(st: &AppState, urls: &[String], paths: &[String]) -> Staged {
                 Err(e) => Err(e.to_string()),
             };
             match res {
+                // Gros fichier ou page qui n'est pas un .torrent : c'est un téléchargement direct
+                Ok(r) if r.status().is_success() && !looks_like_torrent(u, &r) => {
+                    drop(r);
+                    out.direct.push(st.direct.add(u));
+                }
                 Ok(r) if r.status().is_success() => match r.bytes().await {
+                    Ok(b) if scan::torrent_files(&b).is_none() && !u.to_lowercase().split('?').next().unwrap_or("").ends_with(".torrent") => {
+                        out.direct.push(st.direct.add(u));
+                    }
                     Ok(b) => match add_bytes("lien.torrent".into(), b.to_vec()).await {
                         (h, Ok(())) => out.hashes.extend(h),
                         (_, Err(e)) => out.errors.push(e),
@@ -732,6 +898,7 @@ async fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result
     };
     config::save(&cfg)?;
     state.seq_done.lock().unwrap().clear();
+    state.direct.set_folders(cfg.folders.clone(), cfg.split_anime);
     for (kind, folder) in &cfg.folders {
         if let (Some(cat), false) = (category_for(kind), folder.is_empty()) {
             state.qbit.upsert_category(cat, folder).await?;
@@ -1040,13 +1207,16 @@ async fn test_notification(app: tauri::AppHandle, state: State<'_, AppState>) ->
 }
 
 async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
-    let Ok(ts) = st.qbit.torrents().await else { return };
+    let qts = st.qbit.torrents().await;
+    // Téléchargements directs compris (notification de fin), même si qBittorrent ne répond pas
+    let mut all = qts.clone().unwrap_or_default();
+    all.extend(st.direct.list().iter().map(|d| d.raw()));
 
     // 0. Téléchargements qui viennent de se terminer → notification Windows
     let finished: Vec<Media> = {
         let mut last = st.last_progress.lock().unwrap();
         let mut out = Vec::new();
-        for t in &ts {
+        for t in &all {
             let before = last.insert(t.hash.clone(), (t.progress, t.state.clone()));
             // Seulement si on l'a VU en train de télécharger juste avant. Au démarrage, qBittorrent
             // annonce d'abord ses torrents à 0 % (« vérification ») puis à 100 % : ce n'est pas une fin.
@@ -1063,6 +1233,7 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
         let poster = st.art.poster_file(&m.group_key).await;
         notify_finished(app, &m, poster.as_deref());
     }
+    let Ok(ts) = qts else { return };
     let cfg = st.cfg();
 
     // 1. Nouveaux torrents → rangement automatique
@@ -1080,6 +1251,15 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
         let mut cats = st.qbit.categories().await.unwrap_or_default();
         for t in fresh.iter().filter(|t| t.category.is_empty()) {
             let mut kind = detect_kind(&t.name, &t.category).as_str();
+            // Nom sans indice (« Ao no Hako ») : on regarde les fichiers
+            if kind == "other" {
+                if let Ok(files) = st.qbit.files(&t.hash).await {
+                    let info = content_info(&files);
+                    if let Some(k) = info.kind.or(info.fallback) {
+                        kind = k.as_str();
+                    }
+                }
+            }
             // Pas de dossier « Animes » configuré : les animés vont avec les séries.
             let anime_folder = cfg.folders.get("anime").is_some_and(|f| !f.is_empty());
             if kind == "anime" && (!cfg.split_anime || (!anime_folder && !cats.contains_key("Animes"))) {
@@ -1120,32 +1300,58 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
     }
 
     // 2. Vidéos et audio en cours → TOUJOURS téléchargés dans l'ordre (épisode 1, puis 2…)
-    {
-        let (mut seq, mut flpp) = (Vec::new(), Vec::new());
-        {
-            let mut done = st.seq_done.lock().unwrap();
-            for t in &ts {
-                if t.progress >= 1.0 || !t.has_metadata || done.contains(&t.hash) {
-                    continue;
-                }
-                if !matches!(detect_kind(&t.name, &t.category), Kind::Series | Kind::Anime | Kind::Film | Kind::Audio) {
-                    continue;
-                }
-                done.insert(t.hash.clone());
-                if !t.seq_dl {
-                    seq.push(t.hash.clone());
-                }
-                if !t.f_l_piece_prio {
-                    flpp.push(t.hash.clone());
+    let mut seq = Vec::new();
+    let mut flpp_toggle = Vec::new();
+    for t in &ts {
+        if t.progress >= 1.0 || !t.has_metadata || matches!(t.state.as_str(), "pausedDL" | "stoppedDL") {
+            continue;
+        }
+        if !matches!(detect_kind(&t.name, &t.category), Kind::Series | Kind::Anime | Kind::Film | Kind::Audio) {
+            continue;
+        }
+        let first_time = !st.seq_done.lock().unwrap().contains(&t.hash);
+        let is_pack = st.boosted.lock().unwrap().contains_key(&t.hash);
+        if !first_time && !is_pack {
+            continue;
+        }
+        let Ok(files) = st.qbit.files(&t.hash).await else { continue };
+        st.seq_done.lock().unwrap().insert(t.hash.clone());
+        let mut media: Vec<&TorrentFile> = files.iter().filter(|f| is_media(&f.name)).collect();
+        media.sort_by(|a, b| nat_cmp(&a.name, &b.name));
+        let pack = media.len() >= 2;
+        if first_time {
+            if !t.seq_dl {
+                seq.push(t.hash.clone());
+            }
+            // « Premier et dernier morceau d'abord » : utile pour lire tôt UN fichier, mais sur un pack
+            // il entame le début et la fin de CHAQUE épisode → tous avancent en même temps.
+            if t.f_l_piece_prio == pack {
+                flpp_toggle.push(t.hash.clone());
+            }
+            if pack {
+                st.boosted.lock().unwrap().insert(t.hash.clone(), -1);
+            }
+        }
+        if pack {
+            // Le premier épisode coché pas encore fini passe en priorité maximale, les autres attendent
+            let next = media.iter().find(|f| f.priority > 0 && f.progress < 1.0).map(|f| f.index);
+            let before = st.boosted.lock().unwrap().get(&t.hash).copied().unwrap_or(-1);
+            if let Some(idx) = next.filter(|i| *i != before) {
+                if st.qbit.set_file_priority(&t.hash, &[idx], 7).await.is_ok() {
+                    // On ne rabaisse que le fichier qu'on avait monté nous-mêmes (pas une priorité choisie à la main)
+                    if files.iter().any(|f| f.index == before && f.priority == 7) {
+                        let _ = st.qbit.set_file_priority(&t.hash, &[before], 1).await;
+                    }
+                    st.boosted.lock().unwrap().insert(t.hash.clone(), idx);
                 }
             }
         }
-        if !seq.is_empty() {
-            let _ = st.qbit.action(&seq, "toggle_seq").await;
-        }
-        if !flpp.is_empty() {
-            let _ = st.qbit.action(&flpp, "toggle_flpp").await;
-        }
+    }
+    if !seq.is_empty() {
+        let _ = st.qbit.action(&seq, "toggle_seq").await;
+    }
+    if !flpp_toggle.is_empty() {
+        let _ = st.qbit.action(&flpp_toggle, "toggle_flpp").await;
     }
 }
 
@@ -1295,13 +1501,18 @@ pub fn run() {
 
     config::migrate_old_data();
     let cfg = config::load();
+    let direct = direct::Direct::new();
+    direct.set_folders(cfg.folders.clone(), cfg.split_anime);
     let state = AppState {
         qbit: Qbit::new(&cfg),
+        direct,
+        watched: watch::Watched::new(),
         cfg: Mutex::new(cfg),
         art: Artwork::new(),
         schedules: schedule::Schedules::new(),
         seen: Mutex::new(None),
         seq_done: Mutex::new(HashSet::new()),
+        boosted: Mutex::new(HashMap::new()),
         file_counts: Mutex::new(HashMap::new()),
         content_kind: Mutex::new(HashMap::new()),
         last_progress: Mutex::new(HashMap::new()),
@@ -1326,6 +1537,7 @@ pub fn run() {
         })
         .setup(|app| {
             build_tray(app)?;
+            app.state::<AppState>().direct.start();
             customicon::apply_saved(app.handle());
             // .torrent / magnet: → OneForAll
             std::thread::spawn(assoc::register);
@@ -1398,6 +1610,13 @@ pub fn run() {
             open_url,
             set_custom_icon,
             get_custom_icon,
+            get_downloads,
+            nxbrew_links,
+            get_watch,
+            set_watched,
+            add_downloads,
+            download_action,
+            move_downloads,
         ])
         .build(tauri::generate_context!())
         .expect("erreur au lancement de OneForAll");
@@ -1428,6 +1647,17 @@ mod tests {
         assert_eq!(show_target(r"D:\Series", f), r"D:\Series\JoJo's Bizarre Adventure");
         // Déjà dans le dossier de la série : on ne crée pas « …\JoJo's…\JoJo's… »
         assert!(same_dir(&show_target(r"D:\Series\JoJo's Bizarre Adventure", f), r"D:\Series\JoJo's Bizarre Adventure"));
+    }
+
+    #[test]
+    fn kind_from_content() {
+        use super::{content_info, Kind, TorrentFile};
+        let f = |name: &str| TorrentFile { name: name.into(), size: 400 * 1024 * 1024, ..Default::default() };
+        let eps = vec![f("Ao no Hako/01. Chinatsu Senpai.mkv"), f("Ao no Hako/02. You Have to Go to Nationals.mkv"), f("Ao no Hako/03. Chii.mkv")];
+        assert_eq!(content_info(&eps).fallback, Some(Kind::Series));
+        assert_eq!(content_info(&[f("Inception/Inception.mkv")]).fallback, Some(Kind::Film));
+        let films = vec![f("Pack/Alien.mkv"), f("Pack/Aliens.mkv"), f("Pack/Prometheus.mkv")];
+        assert_eq!(content_info(&films).fallback, None);
     }
 
     #[test]

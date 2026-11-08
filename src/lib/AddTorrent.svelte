@@ -3,7 +3,7 @@
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { openUrl, previewTorrent, searchTorrents, stageTorrents } from "./api.js";
+  import { nxbrewLinks, openUrl, previewTorrent, searchTorrents, stageTorrents } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, wantArt } from "./ui.svelte.js";
 
@@ -11,14 +11,21 @@
 
   const TABS = [
     { id: "search", label: "Rechercher", icon: "search" },
-    { id: "link", label: "Lien magnet", icon: "link" },
+    { id: "link", label: "Lien", icon: "link" },
     { id: "file", label: "Fichier .torrent", icon: "torrent" },
   ];
   let tab = $state("search");
+  const LINK_HINT = [
+    "Un lien par ligne :",
+    "• magnet:?xt=urn:btih:…  ou  https://…/fichier.torrent → torrent",
+    "• https://…/fichier.zip (lien direct) → onglet Téléchargements, avec reprise auto",
+  ].join("\n");
   const SOURCES = [
     { id: "c411", label: "C411" },
     { id: "nyaa", label: "Nyaa" },
     { id: "online-fix", label: "Online-Fix" },
+    { id: "fitgirl", label: "FitGirl" },
+    { id: "nxbrew", label: "NXBrew" },
   ];
   let source = $state(localStorage.getItem("oneforall.source") ?? "c411");
   $effect(() => localStorage.setItem("oneforall.source", source));
@@ -55,6 +62,7 @@
 
   // Les torrents sont ajoutés sans démarrer ; l'app propose ensuite de choisir les fichiers (onadded)
   async function addOne(r) {
+    if (r.source === "nxbrew") return select(r);
     try {
       const res = await stageTorrents([r.url]);
       if (res.hashes.length) added = new Set([...added, r.url]);
@@ -66,11 +74,11 @@
 
   async function addLinks() {
     const urls = links.split(/\s+/).filter((l) => l.startsWith("magnet:") || l.startsWith("http"));
-    if (!urls.length) return flash("Colle au moins un lien magnet:… ou https://….torrent");
+    if (!urls.length) return flash("Colle au moins un lien magnet:… ou https://…");
     try {
       const res = await stageTorrents(urls);
       onadded(res);
-      if (res.hashes.length) onclose();
+      if (res.hashes.length || res.direct?.length) onclose();
     } catch (e) {
       flash(String(e));
     }
@@ -181,6 +189,16 @@
     preview = { loading: true };
     const url = r.url;
     try {
+      if (r.source === "nxbrew") {
+        // Pas de .torrent : liens d'hébergeurs (via ouo.io) par partie du jeu
+        const nx = await nxbrewLinks(r.page);
+        if (selected?.url === url) preview = { nx };
+        return;
+      }
+      if (url.startsWith("magnet:")) {
+        preview = { error: "La liste des fichiers s'affiche après l'ajout (lien magnet) : tu pourras choisir quoi télécharger." };
+        return;
+      }
       const data = await previewTorrent(url);
       if (selected?.url === url) preview = { data };
     } catch (e) {
@@ -317,6 +335,23 @@
               <ul class="skel small">{#each Array(5) as _, i}<li style="--d:{i * 60}ms"><span class="sk-lines"><i></i></span></li>{/each}</ul>
             {:else if preview?.error}
               <p class="hint">{preview.error}</p>
+            {:else if preview?.nx}
+              {#if !preview.nx.length}
+                <p class="hint">Aucun lien trouvé sur la page — ouvre-la sur le site.</p>
+              {:else}
+                <p class="nx-note">Les liens passent par <b>ouo.io</b> (vérification à faire dans le navigateur), puis l'hébergeur. Si tu obtiens un lien direct, colle-le dans <b>+ → Lien</b> : il ira dans l'onglet Téléchargements, avec reprise auto.</p>
+                {#each preview.nx as s}
+                  <h4>{s.label}</h4>
+                  {#each s.hosts as h}
+                    <div class="nx-host">
+                      <span class="nx-name">{h.host}</span>
+                      <span class="nx-links">
+                        {#each h.links as l}<button class="nx-link" title={l.url} onclick={() => openUrl(l.url)}>{l.label}</button>{/each}
+                      </span>
+                    </div>
+                  {/each}
+                {/each}
+              {/if}
             {:else if preview?.data}
               <h4>{preview.data.files.length} fichier{preview.data.files.length > 1 ? "s" : ""} · {fmtSize(preview.data.total)}</h4>
               <ul>
@@ -331,7 +366,7 @@
             {#if selected.page}<button class="btn" onclick={() => openUrl(selected.page)}><Icon name="open" size={14} />Voir sur le site</button>{/if}
             {#if already}
               <span class="done big"><Icon name="check" size={15} />Déjà ajouté</span>
-            {:else}
+            {:else if selected.source !== "nxbrew"}
               <button class="btn primary" onclick={() => addOne(selected)}><Icon name="down" size={14} />Télécharger</button>
             {/if}
           </div>
@@ -340,7 +375,7 @@
     </div>
   {:else if tab === "link"}
     <div class="pad">
-      <textarea bind:this={inputEl} bind:value={links} placeholder="magnet:?xt=urn:btih:…  (un lien par ligne)" spellcheck="false"></textarea>
+      <textarea bind:this={inputEl} bind:value={links} placeholder={LINK_HINT} spellcheck="false"></textarea>
       <div class="actions"><button class="btn primary" onclick={addLinks}><Icon name="down" size={14} />Ajouter</button></div>
     </div>
   {:else}
@@ -454,6 +489,13 @@
   .pv-files li:hover { background: var(--chip); }
   .fname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fsize { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .nx-note { margin: 10px 4px 4px; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+  .nx-host { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: 6px; }
+  .nx-host:hover { background: var(--chip); }
+  .nx-name { width: 84px; flex: none; font-size: 12px; font-weight: 700; }
+  .nx-links { display: flex; flex-wrap: wrap; gap: 4px; }
+  .nx-link { height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
+  .nx-link:hover { border-color: var(--accent); background: var(--accent-soft); }
   .pv-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
 
   .pad { flex: 1; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }

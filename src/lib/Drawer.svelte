@@ -105,13 +105,6 @@
       <img class="blur" src={art.url} alt="" />
     {/if}
     <div class="hero-actions">
-      {#if anyRunning}
-        <button class="big" title={single ? "Mettre en pause" : "Tout mettre en pause"} onclick={() => onaction("pause", incomplete)}><Icon name="pause" size={20} /></button>
-      {:else if anyPaused}
-        <button class="big hot" title={single ? "Reprendre" : "Tout reprendre"} onclick={() => onaction("resume", incomplete)}><Icon name="play" size={20} /></button>
-      {:else if canPlay}
-        <button class="big play" title="Lire" onclick={() => onaction("play", g.items)}><Icon name="play" size={20} /></button>
-      {/if}
       <button class="icon-btn close" title="Fermer (Échap)" onclick={onclose}><Icon name="close" size={15} /></button>
     </div>
     <div class="hero-row">
@@ -124,6 +117,16 @@
         <span class="kind"><Icon name={g.kind} size={12} />{kindLabel}</span>
         <h2>{g.title}</h2>
         <p>{[subtitle(g), g.partial ? `${fmtSize(g.size)} sur ${fmtSize(g.totalSize)} · ${partialLabel(g)}` : fmtSize(g.size)].filter(Boolean).join(" · ")}</p>
+      </div>
+      <!-- Pause / reprendre / lire : centré verticalement sur l'affiche -->
+      <div class="hero-main">
+        {#if anyRunning}
+          <button class="big" title={single ? "Mettre en pause" : "Tout mettre en pause"} onclick={() => onaction("pause", incomplete)}><Icon name="pause" size={20} /></button>
+        {:else if anyPaused}
+          <button class="big hot" title={single ? "Reprendre" : "Tout reprendre"} onclick={() => onaction("resume", incomplete)}><Icon name="play" size={20} /></button>
+        {:else if canPlay}
+          <button class="big play" title="Lire" onclick={() => onaction("play", g.items)}><Icon name="play" size={20} /></button>
+        {/if}
       </div>
     </div>
     {#if g.progress < 1 && g.status !== "error"}
@@ -209,7 +212,7 @@
         <button class="sbtn" onclick={() => onaction("recheck", [it])}><Icon name="refresh" size={13} />Revérifier</button>
       </div>
     {/if}
-    <div class="pad"><Files torrent={it} fill episodes={g.kind === "series" || g.kind === "anime"} /></div>
+    <div class="pad"><Files torrent={it} {onaction} fill episodes={g.kind === "series" || g.kind === "anime"} /></div>
   {:else}
     <!-- Plusieurs torrents (un par épisode) : affichés comme UN seul torrent avec sa liste d'épisodes -->
     {@const doneCount = g.items.filter((i) => i.progress >= 1).length}
@@ -307,14 +310,15 @@
     background: linear-gradient(135deg, hsl(var(--h) 60% 26%), hsl(calc(var(--h) + 60) 55% 12%));
   }
   .blur { position: absolute; inset: -40px; width: calc(100% + 80px); height: calc(100% + 80px); object-fit: cover; filter: blur(36px) brightness(0.5) saturate(1.3); }
-  .hero-actions { position: absolute; top: 14px; right: 14px; z-index: 2; display: flex; align-items: flex-start; gap: 8px; }
+  .hero-actions { position: absolute; top: 12px; right: 12px; z-index: 2; }
+  .hero-main { margin-left: auto; flex: none; display: flex; align-items: center; }
   .close { width: 30px; height: 30px; background: rgb(8 10 16 / 0.5); color: white; border-color: rgb(255 255 255 / 0.15); }
   .close:hover { color: white; border-color: white; }
-  .big { display: grid; place-items: center; width: 50px; height: 50px; margin-top: 8px; border-radius: 50%; border: 0; background: white; color: #111; cursor: pointer; box-shadow: 0 8px 24px rgb(0 0 0 / 0.4); transition: scale 0.12s; }
+  .big { display: grid; place-items: center; width: 50px; height: 50px; border-radius: 50%; border: 0; background: white; color: #111; cursor: pointer; box-shadow: 0 8px 24px rgb(0 0 0 / 0.4); transition: scale 0.12s; }
   .big:hover { scale: 1.07; }
   .big.hot { background: #f59e0b; color: #1a1205; }
   .big.play { background: var(--accent); color: white; padding-left: 3px; }
-  .hero-row { position: relative; display: flex; gap: 14px; align-items: center; padding-right: 110px; }
+  .hero-row { position: relative; display: flex; gap: 14px; align-items: center; padding-right: 34px; }
   .hero-progress { position: relative; margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
   .hp-bar { height: 6px; border-radius: 6px; background: rgb(255 255 255 / 0.18); overflow: hidden; }
   .hp-bar span { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, #2b88ff, #4cc2ff); box-shadow: 0 0 12px #4aa8ff; transition: width 0.6s ease; }
