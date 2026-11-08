@@ -29,7 +29,8 @@
       .then((d) => {
         data = d ?? {};
         artOk = !!data.art;
-        if (data.mode === "scene") return; // pas de compte à rebours : on attend le choix
+        // Pas de compte à rebours : on attend le choix
+        if (data.mode === "scene" || data.mode === "op") return;
         total = Math.max(3, data.seconds ?? 15);
         left = total;
         const started = Date.now();
@@ -48,7 +49,13 @@
   const fmt = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")}` : `${s} s`);
 </script>
 
-{#if data}
+{#if data?.mode === "op"}
+  <!-- Pendant l'opening : un seul bouton -->
+  <div class="pill">
+    <button class="skip" onclick={() => act("skip_op")}><Icon name="chevRight" size={15} />Passer l'opening</button>
+    <button class="px" title="Masquer" onclick={() => act("close_op")}><Icon name="close" size={12} /></button>
+  </div>
+{:else if data}
   <div class="card" class:scene role="dialog" aria-label="Épisode suivant">
     {#if artOk}
       <img class="poster" src={data.art} alt="" onerror={() => (artOk = false)} />
@@ -121,6 +128,24 @@
   .primary:hover { background: #fcd34d; }
   .ghost { padding: 0 14px; background: rgb(255 255 255 / 0.08); color: rgb(255 255 255 / 0.85); border: 1px solid rgb(255 255 255 / 0.14); }
   .ghost:hover { background: rgb(255 255 255 / 0.16); color: white; }
+  .pill {
+    position: fixed;
+    inset: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px;
+    border-radius: 14px;
+    background: rgb(14 16 22 / 0.88);
+    border: 1px solid rgb(255 255 255 / 0.14);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    animation: rise 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+  }
+  .skip { flex: 1; height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: white; color: #111; font-size: 14px; }
+  .skip:hover { background: #e8eefc; }
+  .px { width: 30px; height: 38px; display: grid; place-items: center; padding: 0; background: rgb(255 255 255 / 0.08); color: rgb(255 255 255 / 0.7); }
+  .px:hover { background: rgb(255 255 255 / 0.18); color: white; }
   .x { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border-radius: 7px; background: rgb(255 255 255 / 0.08); color: rgb(255 255 255 / 0.7); }
   .x:hover { background: rgb(255 255 255 / 0.18); color: white; }
 </style>

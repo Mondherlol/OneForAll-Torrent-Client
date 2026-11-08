@@ -97,10 +97,12 @@ enum Stage {
     Done,
 }
 
-/// Générique de fin d'après AniSkip (base communautaire), pour un animé sans chapitres
-fn aniskip_ending(title: &str, ep: u32, len: i64) -> Option<crate::chapters::Ending> {
+/// Opening (début, fin) et générique de fin d'après AniSkip (base communautaire), pour un animé sans chapitres
+type Skips = (Option<(f64, f64)>, Option<crate::chapters::Ending>);
+
+fn aniskip(title: &str, ep: u32, len: i64) -> Skips {
     static MAL: LazyLock<Mutex<HashMap<String, Option<i64>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-    tauri::async_runtime::block_on(async {
+    let res: Option<Skips> = tauri::async_runtime::block_on(async {
         let client = reqwest::Client::builder().user_agent(concat!("OneForAll/", env!("CARGO_PKG_VERSION"))).timeout(Duration::from_secs(8)).build().ok()?;
         let cached = MAL.lock().unwrap().get(title).copied();
         let mal = match cached {
@@ -114,14 +116,21 @@ fn aniskip_ending(title: &str, ep: u32, len: i64) -> Option<crate::chapters::End
                 m?
             }
         };
-        let url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=ed&types[]=mixed-ed&episodeLength={len}");
+        let url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=op&types[]=mixed-op&types[]=ed&types[]=mixed-ed&episodeLength={len}");
         let v: serde_json::Value = client.get(url).send().await.ok()?.json().await.ok()?;
-        let r = v["results"].as_array()?.iter().find(|r| matches!(r["skipType"].as_str(), Some("ed" | "mixed-ed")))?.clone();
-        let (start, end) = (r["interval"]["startTime"].as_f64()?, r["interval"]["endTime"].as_f64()?);
-        let after = (len as f64 - end).max(0.0);
-        // Sans chapitres on ne sait pas si c'est un aperçu : seule une longue suite compte comme scène
-        Some(crate::chapters::Ending { start, end, after, after_is_preview: after < 40.0 })
-    })
+        let results = v["results"].as_array()?.clone();
+        let span = |types: &[&str]| {
+            let r = results.iter().find(|r| r["skipType"].as_str().is_some_and(|t| types.contains(&t)))?;
+            Some((r["interval"]["startTime"].as_f64()?, r["interval"]["endTime"].as_f64()?))
+        };
+        let ending = span(&["ed", "mixed-ed"]).map(|(start, end)| {
+            let after = (len as f64 - end).max(0.0);
+            // Sans chapitres on ne sait pas si c'est un aperçu : seule une longue suite compte comme scène
+            crate::chapters::Ending { start, end, after, after_is_preview: after < 40.0 }
+        });
+        Some((span(&["op", "mixed-op"]), ending))
+    });
+    res.unwrap_or((None, None))
 }
 
 /// Choix fait dans la fenêtre : « next » (lancer maintenant / fin du compte à rebours), « skip » (passer
@@ -155,8 +164,7 @@ pub fn log(msg: &str) {
 
 /// `mode` : « countdown » (compte à rebours), « scene » (une scène suit le générique, `after` s), « end » (fin du fichier)
 fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64, mode: &str, after: f64) {
-    hide_overlay(app);
-    *OVERLAY_DATA.lock().unwrap() = Some(serde_json::json!({
+    let data = serde_json::json!({
         "label": next.label,
         "title": next.title,
         "name": next.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
@@ -164,9 +172,19 @@ fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64, mode: &str, a
         "seconds": seconds,
         "mode": mode,
         "after": after.round() as i64,
-    }));
+    });
+    open_overlay(app, data, 440.0, 156.0, &format!("épisode suivant ({mode}) : {}", next.path.display()));
+}
+
+/// Petit bouton « Passer l'opening »
+fn show_skip_op(app: &tauri::AppHandle) {
+    open_overlay(app, serde_json::json!({ "mode": "op" }), 236.0, 64.0, "bouton « passer l'opening »");
+}
+
+fn open_overlay(app: &tauri::AppHandle, data: serde_json::Value, w: f64, h: f64, what: &str) {
+    hide_overlay(app);
+    *OVERLAY_DATA.lock().unwrap() = Some(data);
     let url = tauri::WebviewUrl::App("index.html".into());
-    let (w, h) = (440.0, 156.0);
     let mut b = tauri::WebviewWindowBuilder::new(app, "overlay", url)
         .title("Épisode suivant")
         .inner_size(w, h)
@@ -185,8 +203,8 @@ fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64, mode: &str, a
         b = b.position(mw - w - 28.0, mh - h - 120.0);
     }
     match b.build() {
-        Ok(_) => log(&format!("fenêtre « épisode suivant » affichée : {} ({seconds} s)", next.path.display())),
-        Err(e) => log(&format!("fenêtre « épisode suivant » impossible : {e}")),
+        Ok(_) => log(&format!("fenêtre affichée : {what}")),
+        Err(e) => log(&format!("fenêtre impossible ({what}) : {e}")),
     }
 }
 
@@ -382,6 +400,10 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
     // Générique de fin du fichier en cours (chapitres / AniSkip), calculé une fois par fichier
     let mut ending_for: Option<String> = None;
     let mut ending: Option<crate::chapters::Ending> = None;
+    // Opening du fichier en cours, et état du bouton « Passer l'opening » (affiché / fermé pour ce fichier)
+    let mut opening: Option<(f64, f64)> = None;
+    let mut op_shown = false;
+    let mut op_dismissed = false;
     // Reprise automatique déjà faite pour ce fichier
     let mut resumed = false;
     loop {
@@ -390,10 +412,11 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
         let index: HashMap<String, usize> = items.iter().enumerate().map(|(i, it)| (crate::watch::key(&it.path.display().to_string()), i)).collect();
         let pending: Vec<String> = std::mem::take(&mut *cmds.lock().unwrap());
         if !pending.is_empty() {
-            if stage != Stage::None {
+            if stage != Stage::None || op_shown {
                 hide_overlay(app);
             }
             stage = Stage::None;
+            op_shown = false;
             if ask(&mut s, &(pending.join("\n") + "\n")).is_none() {
                 break;
             }
@@ -404,10 +427,12 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
             cur_uri = snap.uri.clone();
             applied = false;
             resumed = false;
-            if !matches!(stage, Stage::None | Stage::Done) {
+            if !matches!(stage, Stage::None | Stage::Done) || op_shown {
                 hide_overlay(app);
             }
             stage = Stage::None;
+            op_shown = false;
+            op_dismissed = false;
         }
         let path = cur_uri.as_deref().and_then(crate::watch::mrl_to_path);
         let pos = path.as_deref().and_then(|p| index.get(&crate::watch::key(p)).copied());
@@ -434,18 +459,35 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
             st.watched.progress(p, time * 1000, len * 1000);
         }
 
-        // ----- générique de fin : chapitres du fichier, sinon AniSkip pour un animé -----
+        // ----- génériques (début, fin) : chapitres du fichier, sinon AniSkip pour un animé -----
         if len > 0 && ending_for != cur_uri {
             ending_for = cur_uri.clone();
-            ending = path.as_deref().and_then(|p| crate::chapters::ending(&crate::chapters::read(Path::new(p)), len as f64));
-            if ending.is_none() {
+            let chaps = path.as_deref().map(|p| crate::chapters::read(Path::new(p))).unwrap_or_default();
+            ending = crate::chapters::ending(&chaps, len as f64);
+            opening = crate::chapters::opening(&chaps, len as f64);
+            if ending.is_none() || opening.is_none() {
                 if let Some(it) = pos.map(|i| &items[i]).filter(|it| it.anime) {
                     if let Some(ep) = it.episode {
-                        ending = aniskip_ending(&it.title, ep, len);
+                        let (op, ed) = aniskip(&it.title, ep, len);
+                        opening = opening.or(op);
+                        ending = ending.or(ed);
                     }
                 }
             }
-            log(&format!("générique de fin : {:?}", ending));
+            log(&format!("opening : {opening:?} — générique de fin : {ending:?}"));
+        }
+
+        // ----- bouton « Passer l'opening », affiché pendant l'opening -----
+        if let Some((op_start, op_end)) = opening {
+            let t = time as f64;
+            let inside = !snap.stopped && len > 0 && t >= op_start && t < op_end - 3.0;
+            if inside && !op_shown && !op_dismissed && stage == Stage::None {
+                show_skip_op(app);
+                op_shown = true;
+            } else if !inside && op_shown {
+                hide_overlay(app);
+                op_shown = false;
+            }
         }
 
         // ----- épisode suivant -----
@@ -536,6 +578,20 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
             if let Some(action) = ACTION.lock().unwrap().take() {
                 hide_overlay(app);
                 match action.as_str() {
+                    // Passer l'opening : on saute à sa fin
+                    "skip_op" => {
+                        op_shown = false;
+                        op_dismissed = true;
+                        if let Some((_, end)) = opening {
+                            if ask(&mut s, &format!("seek {}\n", end.ceil() as i64)).is_none() {
+                                return st.watched.save();
+                            }
+                        }
+                    }
+                    "close_op" => {
+                        op_shown = false;
+                        op_dismissed = true;
+                    }
                     "next" => {
                         stage = Stage::None;
                         if ask(&mut s, "next\n").is_none() {

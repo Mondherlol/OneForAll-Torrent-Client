@@ -207,6 +207,30 @@ pub fn ending(chapters: &[Chapter], length: f64) -> Option<Ending> {
     Some(Ending { start: c.start, end, after, after_is_preview })
 }
 
+static RE_OPENING: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*(op\b|op\s*\d|opening|générique de début|generique de debut)").unwrap());
+static RE_INTRO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)^\s*intro").unwrap());
+
+/// Opening (début, fin en secondes) d'après les chapitres. Un chapitre « Intro » ne compte que s'il n'y a
+/// pas de chapitre « Opening / OP » et qu'il a la durée d'un opening (60–130 s) : chez certains, « Intro »
+/// est le début de l'épisode avant l'opening.
+pub fn opening(chapters: &[Chapter], length: f64) -> Option<(f64, f64)> {
+    let span = |i: usize| {
+        let c = &chapters[i];
+        let end = c.end.or_else(|| chapters.get(i + 1).map(|n| n.start)).unwrap_or(length);
+        (c.start, end)
+    };
+    let i = chapters.iter().position(|c| RE_OPENING.is_match(&c.name)).or_else(|| {
+        chapters.iter().enumerate().position(|(i, c)| {
+            let (s, e) = span(i);
+            RE_INTRO.is_match(&c.name) && (60.0..=130.0).contains(&(e - s))
+        })
+    })?;
+    let (s, e) = span(i);
+    // Dans la première moitié, et d'une durée plausible
+    (e > s + 20.0 && (length <= 0.0 || s < length * 0.5)).then_some((s, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +257,22 @@ mod tests {
         assert!(e.after >= 85.0 && !e.after_is_preview);
         // « Opening » n'est pas un ending ; un « ED » en début de fichier non plus
         assert!(ending(&[ch(0.0, 90.0, "Opening")], 1400.0).is_none());
+    }
+
+    #[test]
+    fn openings() {
+        // Dreamland : « Opening » dès le début
+        let d = vec![ch(0.0, 89.0, "Opening"), ch(89.0, 1290.0, "Chapter 1"), ch(1290.0, 1378.0, "Ending")];
+        assert_eq!(opening(&d, 1380.0), Some((0.0, 89.0)));
+        // Bocchi : « Intro » (3 min 41 d'épisode) puis « OP » → c'est OP l'opening
+        let b = vec![ch(0.0, 221.0, "Intro"), ch(221.0, 311.0, "OP"), ch(311.0, 619.0, "Part A")];
+        assert_eq!(opening(&b, 1421.0), Some((221.0, 311.0)));
+        // Jaadugar : pas d'« OP », « Intro » de 90 s = l'opening
+        let j = vec![ch(0.0, 14.0, "Chapter 1"), ch(14.0, 104.0, "Intro"), ch(104.0, 1327.0, "Chapter 2")];
+        assert_eq!(opening(&j, 1423.0), Some((14.0, 104.0)));
+        // Ao no Hako : « Prologue » puis « Opening »
+        let a = vec![ch(0.0, 92.0, "Prologue"), ch(92.0, 182.0, "Opening"), ch(182.0, 755.0, "Part A")];
+        assert_eq!(opening(&a, 1421.0), Some((92.0, 182.0)));
     }
 
     /// Fichiers réels : cargo test chapters_real -- --ignored --nocapture (CHAPTERS_FILES=a.mkv;b.mkv)
