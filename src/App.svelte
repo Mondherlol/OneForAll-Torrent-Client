@@ -458,7 +458,7 @@
     ].filter(Boolean),
   });
 
-  function menuFor(e, g) {
+  function menuFor(e, g, extra = []) {
     loadCategories();
     // Clic droit sur un élément de la sélection → menu pour toute la sélection
     if (sel.size > 1 && sel.has(g.key)) return multiMenu(e, selItems);
@@ -473,6 +473,7 @@
     const installable = g.kind === "game" || g.kind === "software";
     openMenu(e, [
       canPlay && { label: "Lire", icon: "play", run: () => startPlay(its) },
+      ...extra,
       { label: "Afficher les détails", icon: "list", run: () => (selectedKey = g.key) },
       { label: inst ? "Ouvrir le dossier de l'installable" : "Ouvrir le dossier", icon: "folder", run: () => onaction("reveal", its[0]) },
       inst?.location && { label: "Ouvrir le dossier du jeu / logiciel installé", icon: "open", run: () => onaction("openInstall", inst) },
@@ -516,7 +517,7 @@
     ]);
   }
 
-  const itemMenu = (e, it, g = null) => menuFor(e, g ?? buildGroups([it], false)[0]);
+  const itemMenu = (e, it, g = null, extra = []) => menuFor(e, g ?? buildGroups([it], false)[0], extra);
 
   // Un clic ailleurs que sur une carte (ou sur les barres d'action) annule la sélection
   function clearSelOutside(e) {

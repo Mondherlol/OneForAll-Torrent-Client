@@ -138,7 +138,18 @@ impl Watched {
     pub fn get(&self, paths: &[String]) -> HashMap<String, Watch> {
         self.sync();
         let map = self.map.lock().unwrap();
-        paths.iter().filter_map(|p| map.get(&key(p)).map(|w| (p.clone(), Watch { vlc: None, ..w.clone() }))).collect()
+        paths
+            .iter()
+            .filter_map(|p| {
+                let k = key(p);
+                // Torrent d'un épisode rangé dans un dossier : la vidéo vue le plus récemment dedans
+                let w = map.get(&k).or_else(|| {
+                    let dir = format!("{}\\", k.trim_end_matches('\\'));
+                    map.iter().filter(|(kk, _)| kk.starts_with(&dir)).map(|(_, w)| w).max_by_key(|w| w.at)
+                })?;
+                Some((p.clone(), Watch { vlc: None, ..w.clone() }))
+            })
+            .collect()
     }
 
     /// Marquage à la main (vu / pas vu)

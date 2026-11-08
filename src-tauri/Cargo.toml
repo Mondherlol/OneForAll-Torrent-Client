@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.2.13"
+version = "0.2.14"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
@@ -38,7 +38,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # Binaire final : petit et rapide
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+# Build parallèle : « lto = true » + « codegen-units = 1 » optimisaient tout sur UN cœur (~10 min par release)
+lto = "thin"
+codegen-units = 16
 strip = true
 panic = "abort"

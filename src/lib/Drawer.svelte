@@ -3,7 +3,9 @@
   import Icon from "./Icon.svelte";
   import Files from "./Files.svelte";
   import Sources from "./Sources.svelte";
-  import { KINDS, STATUS_LABEL, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
+  import { KINDS, STATUS_LABEL, fmtEta, fmtPos, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
+  import { getWatch, setWatched } from "./api.js";
+  import { flash } from "./ui.svelte.js";
   import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup, alignEpisodes } from "./ui.svelte.js";
 
   let { group: g, onclose, onaction, onitemmenu } = $props();
@@ -61,6 +63,52 @@
     onaction("searchEpisode", { query: `${latest.title} ${code}`, source, prefer: releaseGroup(latest.name), code });
   }
   const isVideo = $derived(g.kind === "film" || isShow);
+
+  // ---------- vu / en cours (historique de VLC), pour les séries en plusieurs torrents ----------
+  let watch = $state({});
+  async function loadWatch() {
+    if (!isVideo || single) return;
+    try {
+      watch = await getWatch(g.items.map((i) => i.content_path).filter(Boolean));
+    } catch {}
+  }
+  $effect(() => {
+    g.key;
+    loadWatch();
+    const id = setInterval(() => !document.hidden && loadWatch(), 4000);
+    return () => clearInterval(id);
+  });
+  const w = (it) => watch[it.content_path];
+  // Épisodes téléchargés, dans l'ordre de la liste
+  const epItems = $derived(rows.filter((r) => r.type === "item").map((r) => r.it));
+  const resume = $derived.by(() => {
+    const started = epItems.filter((i) => w(i)?.pos_ms > 0 && !w(i)?.watched).sort((a, b) => w(b).at - w(a).at)[0];
+    if (started) return { it: started, pos: w(started).pos_ms };
+    let last = -1;
+    epItems.forEach((i, n) => w(i)?.watched && (last = n));
+    if (last < 0) return null;
+    const next = epItems.slice(last + 1).find((i) => !w(i)?.watched && i.progress > 0);
+    return next ? { it: next, pos: 0 } : null;
+  });
+  const seenCount = $derived(epItems.filter((i) => w(i)?.watched).length);
+  async function markSeen(list, seen) {
+    try {
+      await setWatched(list.map((i) => i.content_path), seen);
+      loadWatch();
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  /** Entrées « vu » ajoutées au clic droit d'un épisode */
+  const watchMenu = (it) =>
+    !isVideo || single
+      ? []
+      : [
+          w(it)?.watched
+            ? { label: "Marquer comme pas vu", icon: "eye", run: () => markSeen([it], false) }
+            : { label: "Marquer comme vu", icon: "eye", run: () => markSeen([it], true) },
+          { label: "Marquer vus jusqu'ici", icon: "check", run: () => markSeen(epItems.slice(0, epItems.findIndex((x) => x.hash === it.hash) + 1), true) },
+        ];
   // Groupe : dossier commun ; torrent seul : son contenu
   const location = $derived(single ? g.items[0].content_path || g.items[0].save_path : g.items[0].save_path);
 
@@ -220,6 +268,13 @@
       <div class="eps-head">
         <b>{doneCount}</b><span>/{g.items.length} {isShow ? "épisodes" : "éléments"} téléchargés</span>
         <em>{fmtSize(g.size)}</em>
+        {#if resume}
+          <button class="resume" title="Lancer dans VLC (il reprend là où tu t'es arrêté)" onclick={() => onaction("play", [resume.it])}>
+            <Icon name="play" size={11} />{resume.pos ? "Reprendre" : "Suivant"} : {epLabel(resume.it) ?? resume.it.title}{#if resume.pos}<i>{fmtPos(resume.pos)}</i>{/if}
+          </button>
+        {:else if seenCount}
+          <span class="seen-n"><Icon name="eye" size={12} />{seenCount} vu{seenCount > 1 ? "s" : ""}</span>
+        {/if}
       </div>
       <ul class="eps">
         {#each rows as row (row.key)}
@@ -243,11 +298,13 @@
           {@const pct = Math.floor(it.progress * 1000) / 10}
           {@const done = it.progress >= 1}
           {@const paused = isPaused(it.status) && !done}
+          {@const wi = w(it)}
           <li
             class:done
             class:paused
             class:err={it.status === "error"}
-            oncontextmenu={(e) => onitemmenu(e, it)}
+            class:seen={wi?.watched}
+            oncontextmenu={(e) => onitemmenu(e, it, null, watchMenu(it))}
             ondblclick={(e) => !e.target.closest("button") && it.progress > 0 && onaction(isVideo ? "play" : "reveal", isVideo ? [it] : it)}
           >
             {#if epLabel(it)}<span class="ep">{epLabel(it)}</span>{/if}
@@ -256,6 +313,11 @@
               {#if !done}<div class="bar"><span style="width:{pct}%"></span></div>{/if}
             </div>
             <span class="meta">
+              {#if wi?.watched}
+                <span class="wbadge seen" title="Vu (d'après VLC)"><Icon name="eye" size={11} />Vu</span>
+              {:else if wi?.pos_ms > 0}
+                <span class="wbadge mid" title="Arrêté à {fmtPos(wi.pos_ms)} dans VLC"><Icon name="pause" size={9} />{fmtPos(wi.pos_ms)}</span>
+              {/if}
               {#if it.status === "error"}
                 <span class="bad">Manquant</span>
               {:else if done}
@@ -274,7 +336,7 @@
             {#if isVideo}
               <button class="mini play" title="Lire" disabled={it.progress <= 0 || it.status === "error"} onclick={() => onaction("play", [it])}><Icon name="play" size={11} /></button>
             {/if}
-            <button class="mini" title="Plus d'actions" onclick={(e) => onitemmenu(e, it)}><Icon name="more" size={14} /></button>
+            <button class="mini" title="Plus d'actions" onclick={(e) => onitemmenu(e, it, null, watchMenu(it))}><Icon name="more" size={14} /></button>
           </li>
           {/if}
         {/each}
@@ -377,6 +439,14 @@
   .eps-head { display: flex; align-items: baseline; gap: 2px; padding: 0 4px 8px; font-size: 13px; color: var(--muted); }
   .eps-head b { font-size: 17px; color: var(--text); font-weight: 800; }
   .eps-head em { font-style: normal; margin-left: 8px; padding: 1px 7px; border-radius: 6px; background: var(--chip); font-size: 11.5px; font-weight: 600; color: var(--text-2); }
+  .resume { display: inline-flex; align-items: center; gap: 6px; height: 26px; margin-left: auto; padding: 0 10px; border-radius: 8px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; align-self: center; }
+  .resume:hover { filter: brightness(1.1); }
+  .resume i { font-style: normal; font-weight: 600; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .seen-n { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 12px; color: var(--muted); align-self: center; }
+  .wbadge { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .wbadge.seen { background: rgb(22 163 74 / 0.12); color: var(--ok); }
+  .wbadge.mid { background: rgb(245 158 11 / 0.15); color: #d97706; }
+  .eps li.seen .name { opacity: 0.55; }
   .eps { flex: 1; min-height: 0; overflow-y: auto; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
   .eps li { flex: none; display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 5px 8px; border-radius: 9px; transition: background 0.1s; cursor: default; }
   .eps li:hover { background: var(--chip); }

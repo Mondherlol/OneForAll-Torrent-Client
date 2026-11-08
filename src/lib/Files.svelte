@@ -108,6 +108,11 @@
     const next = vids.slice(last + 1).find((f) => !w(f)?.watched && f.progress > 0);
     return next ? { f: next, pos: 0 } : null;
   });
+  // Tous les épisodes jusqu'à celui-ci (par index : la liste est rechargée toutes les 3 s, les objets changent)
+  const upTo = (f) => {
+    const vids = files.filter((x) => VIDEO.test(x.name));
+    return vids.slice(0, vids.findIndex((x) => x.index === f.index) + 1);
+  };
   const seenCount = $derived(files.filter((f) => w(f)?.watched).length);
   async function markSeen(list, seen) {
     try {
@@ -185,7 +190,7 @@
       VIDEO.test(f.name) && (w(f)?.watched
         ? { label: "Marquer comme pas vu", icon: "eye", run: () => markSeen([f], false) }
         : { label: "Marquer comme vu", icon: "eye", run: () => markSeen([f], true) }),
-      VIDEO.test(f.name) && { label: "Marquer vus jusqu'ici", icon: "check", run: () => markSeen(shown.slice(0, shown.indexOf(f) + 1).filter((x) => VIDEO.test(x.name)), true) },
+      VIDEO.test(f.name) && { label: "Marquer vus jusqu'ici", icon: "check", run: () => markSeen(upTo(f), true) },
     ]);
   }
 </script>

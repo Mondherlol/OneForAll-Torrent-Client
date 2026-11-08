@@ -178,3 +178,11 @@ export function hueOf(str) {
   for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
   return h % 360;
 }
+
+/** Position de lecture : 1137634 ms → « 18:57 », 4000000 → « 1:06:40 » */
+export function fmtPos(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = String(Math.floor((s % 3600) / 60)).padStart(h ? 2 : 1, "0");
+  return `${h ? h + ":" : ""}${m}:${String(s % 60).padStart(2, "0")}`;
+}
