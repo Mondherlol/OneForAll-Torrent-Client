@@ -184,9 +184,17 @@ pub fn open(ffdir: &Path, path: &str) -> Result<Source, String> {
         subs,
     };
     SOURCES.lock().unwrap().insert(id, src.clone());
-    let s2 = src.clone();
-    std::thread::spawn(move || prepare(&s2));
     Ok(src)
+}
+
+/// Studio ouvert : prépare en fond les sous-titres puis la copie de lecture rapide
+pub fn warm(src: &Source) {
+    let s2 = src.clone();
+    std::thread::spawn(move || {
+        clean_cache(&s2.id);
+        prepare(&s2);
+        build_proxy(&s2);
+    });
 }
 
 fn cache_dir(id: &str) -> PathBuf {
@@ -195,7 +203,7 @@ fn cache_dir(id: &str) -> PathBuf {
 
 /// Sous-titres texte extraits (.ass) et polices du MKV : le filtre « subtitles » relirait sinon tout le fichier
 /// (plusieurs secondes sur un épisode) à chaque saut dans la vidéo.
-fn prepare(src: &Source) {
+pub fn prepare(src: &Source) {
     let dir = cache_dir(&src.id);
     if dir.join("ready").is_file() {
         return;
@@ -219,6 +227,114 @@ fn prepare(src: &Source) {
             .status();
     }
     let _ = std::fs::write(dir.join("ready"), "");
+}
+
+/// Copie de lecture rapide : 360p, une version par piste audio, sous-titres texte en WebVTT.
+/// Fichier normal → le lecteur saute instantanément (le flux converti à la volée doit redémarrer à chaque saut).
+#[derive(Serialize, Clone, Default)]
+pub struct Proxy {
+    pub progress: f64,
+    pub ready: bool,
+    pub error: String,
+    /// Adresse du dossier : <base>p<N>.mp4 (piste audio N), <base>pnone.mp4, <base>s<N>.vtt
+    pub base: String,
+}
+
+static PROXIES: LazyLock<Mutex<HashMap<String, Proxy>>> = LazyLock::new(Default::default);
+static PROXY_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn proxy(id: &str) -> Option<Proxy> {
+    PROXIES.lock().unwrap().get(id).cloned()
+}
+
+fn set_proxy(id: &str, f: impl FnOnce(&mut Proxy)) {
+    let mut m = PROXIES.lock().unwrap();
+    f(m.entry(id.to_string()).or_default());
+}
+
+fn tonemap(src: &Source) -> &'static str {
+    if src.hdr && has_zscale() {
+        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,"
+    } else {
+        ""
+    }
+}
+
+fn build_proxy(src: &Source) {
+    let dir = cache_dir(&src.id);
+    let base = format!("http://127.0.0.1:{}/f/{}/", server(), src.id);
+    set_proxy(&src.id, |p| p.base = base.clone());
+    if dir.join("proxy-ok").is_file() {
+        return set_proxy(&src.id, |p| {
+            p.ready = true;
+            p.progress = 1.0;
+        });
+    }
+    // Une seule préparation à la fois (plusieurs vidéos ouvertes d'affilée)
+    let _g = PROXY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = std::fs::create_dir_all(&dir);
+    let scale = if src.height > 360 { "scale=-2:360," } else { "" };
+    let mut c = ff_cmd("ffmpeg.exe");
+    // Priorité basse : l'aperçu en direct reste fluide pendant ce temps
+    #[cfg(windows)]
+    c.creation_flags(0x0800_0000 | 0x0000_4000);
+    c.args(["-v", "error", "-y", "-nostdin", "-nostats", "-progress", "pipe:1", "-i"]).arg(&src.path);
+    c.args(["-map", "0:v:0", "-vf", &format!("{}{scale}format=yuv420p", tonemap(src)), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-g", "24", "-an"]).arg(dir.join("v.mp4"));
+    for a in &src.audio {
+        c.args(["-map", &format!("0:a:{}", a.n), "-vn", "-c:a", "aac", "-b:a", "96k", "-ac", "2"]).arg(dir.join(format!("a{}.m4a", a.n)));
+    }
+    let Ok(mut child) = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        return set_proxy(&src.id, |p| p.error = "ffmpeg introuvable".into());
+    };
+    if let Some(out) = child.stdout.take() {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                let f = (us / 1e6 / src.duration.max(1.0)).clamp(0.0, 0.99);
+                set_proxy(&src.id, |p| p.progress = f);
+            }
+        }
+    }
+    if !child.wait().is_ok_and(|s| s.success()) {
+        return set_proxy(&src.id, |p| p.error = "Préparation de la lecture rapide impossible".into());
+    }
+    // Image + chaque piste audio, sans réencoder
+    for a in &src.audio {
+        let audio = dir.join(format!("a{}.m4a", a.n));
+        let _ = ff_cmd("ffmpeg.exe")
+            .args(["-v", "error", "-y", "-nostdin", "-i"])
+            .arg(dir.join("v.mp4"))
+            .arg("-i")
+            .arg(&audio)
+            .args(["-map", "0:v", "-map", "1:a", "-c", "copy", "-movflags", "+faststart"])
+            .arg(dir.join(format!("p{}.mp4", a.n)))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(audio);
+    }
+    let _ = std::fs::rename(dir.join("v.mp4"), dir.join("pnone.mp4"));
+    // Sous-titres texte → WebVTT (affichés par le lecteur, sans réencoder l'image)
+    for s in src.subs.iter().filter(|s| !s.image) {
+        if let Some(ass) = cached_sub(src, s.n) {
+            let _ = ff_cmd("ffmpeg.exe").args(["-v", "error", "-y", "-nostdin", "-i"]).arg(&ass).arg(dir.join(format!("s{}.vtt", s.n))).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        }
+    }
+    let _ = std::fs::write(dir.join("proxy-ok"), "");
+    set_proxy(&src.id, |p| {
+        p.ready = true;
+        p.progress = 1.0;
+    });
+}
+
+/// Vieux caches (copies de lecture rapide) : on garde 3 jours
+fn clean_cache(keep: &str) {
+    let root = crate::config::data_dir().join("clipcache");
+    for e in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 3 * 86400);
+        if old && e.file_name().to_string_lossy() != keep {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// Fichier .ass prêt pour cette piste (attend un peu la préparation si elle est en cours)
@@ -352,6 +468,49 @@ fn server() -> u16 {
     })
 }
 
+/// Fichier de lecture rapide (/f/<id>/<fichier>), avec reprise par plages : le lecteur saute où il veut instantanément
+fn serve_file(mut s: TcpStream, method: &str, rest: &str, range: Option<&str>, cors: &str) {
+    let (id, name) = rest.split_once('/').unwrap_or(("", ""));
+    let ok_name = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') && !name.contains("..");
+    let file = cache_dir(id).join(name);
+    let Some(len) = (ok_name && id.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| std::fs::metadata(&file).ok())
+        .flatten()
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+    else {
+        let _ = s.write_all(format!("HTTP/1.1 404 Not Found\r\n{cors}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        return;
+    };
+    let ctype = if name.ends_with(".vtt") { "text/vtt; charset=utf-8" } else { "video/mp4" };
+    let (start, end) = range
+        .and_then(|r| r.strip_prefix("bytes="))
+        .and_then(|r| r.split_once('-'))
+        .map(|(a, b)| (a.parse::<u64>().unwrap_or(0), b.parse::<u64>().ok().unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1))))
+        .unwrap_or((0, len.saturating_sub(1)));
+    let partial = range.is_some();
+    if start >= len && len > 0 {
+        let _ = s.write_all(format!("HTTP/1.1 416 Range Not Satisfiable\r\n{cors}Content-Range: bytes */{len}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+        return;
+    }
+    let count = if len == 0 { 0 } else { end - start + 1 };
+    let head = if partial {
+        format!("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{len}\r\n")
+    } else {
+        "HTTP/1.1 200 OK\r\n".to_string()
+    };
+    let _ = s.write_all(format!("{head}Content-Type: {ctype}\r\nContent-Length: {count}\r\nAccept-Ranges: bytes\r\n{cors}Connection: close\r\n\r\n").as_bytes());
+    if method == "HEAD" || count == 0 {
+        return;
+    }
+    let Ok(mut f) = std::fs::File::open(&file) else { return };
+    use std::io::Seek;
+    if f.seek(std::io::SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let _ = std::io::copy(&mut f.take(count), &mut s);
+}
+
 fn query(q: &str, k: &str) -> Option<String> {
     q.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, b)| b.to_string()))
 }
@@ -365,11 +524,17 @@ fn handle(mut s: TcpStream) {
     if reader.read_line(&mut first).is_err() {
         return;
     }
-    // Reste de l'en-tête
+    // Reste de l'en-tête (on garde « Range » pour les fichiers de lecture rapide)
+    let mut range = None;
     loop {
         let mut l = String::new();
         if reader.read_line(&mut l).map(|n| n == 0).unwrap_or(true) || l == "\r\n" {
             break;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("range") {
+                range = Some(v.trim().to_string());
+            }
         }
     }
     let mut parts = first.split_whitespace();
@@ -381,6 +546,9 @@ fn handle(mut s: TcpStream) {
         return;
     }
     let (path, q) = target.split_once('?').unwrap_or((target, ""));
+    if let Some(rest) = path.strip_prefix("/f/") {
+        return serve_file(s, method, rest, range.as_deref(), CORS);
+    }
     let Some(src) = path.strip_prefix("/v/").and_then(source) else {
         let _ = s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         return;
@@ -463,5 +631,36 @@ mod tests {
             println!("passage {i} : {st:?} {} octets", std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0));
             assert!(st.success());
         }
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    /// cargo test proxy_build_live -- --ignored --nocapture  (CLIP, FFDIR)
+    #[test]
+    #[ignore]
+    fn proxy_build_live() {
+        let ff = PathBuf::from(std::env::var("FFDIR").unwrap());
+        let src = open(&ff, &std::env::var("CLIP").unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(cache_dir(&src.id));
+        let t = std::time::Instant::now();
+        prepare(&src);
+        build_proxy(&src);
+        let p = proxy(&src.id).unwrap();
+        println!("prête={} err={} en {:?}", p.ready, p.error, t.elapsed());
+        for e in std::fs::read_dir(cache_dir(&src.id)).unwrap().flatten() {
+            println!("  {} {} o", e.file_name().to_string_lossy(), e.metadata().unwrap().len());
+        }
+        // Saut au milieu du fichier par plage
+        let mut c = TcpStream::connect(("127.0.0.1", server())).unwrap();
+        write!(c, "GET /f/{}/p1.mp4 HTTP/1.1\r\nRange: bytes=1000000-1000099\r\n\r\n", src.id).unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).unwrap();
+        let head = String::from_utf8_lossy(&got[..got.len().min(200)]);
+        println!("{}", head.lines().take(3).collect::<Vec<_>>().join(" | "));
+        assert!(head.starts_with("HTTP/1.1 206"));
+        assert!(got.ends_with(&[0u8; 0]) && got.len() > 100);
     }
 }

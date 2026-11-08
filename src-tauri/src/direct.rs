@@ -390,6 +390,9 @@ impl Direct {
         };
         let ff = crate::ytdl::ffmpeg(&self.0.client, &note).await.map_err(Fail::Retry)?;
         let src = crate::clip::open(&ff, &spec.path).map_err(Fail::Fatal)?;
+        // Sous-titres extraits avant l'export (export repris après un redémarrage, sans passer par le studio)
+        let s2 = src.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || crate::clip::prepare(&s2)).await;
         let tmp = crate::ytdl::tmp_dir(id);
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).map_err(|e| Fail::Fatal(e.to_string()))?;

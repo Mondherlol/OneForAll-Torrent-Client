@@ -574,7 +574,8 @@
   let band = $state(null);
   let bandBase = new Set();
   function bandDown(e) {
-    if (e.button !== 0 || e.target.closest(".card, button, input, select, a")) return;
+    // Onglet DL : pas de sélection par rectangle (la capture du pointeur volait les clics et doubles-clics des lignes)
+    if (view === "downloads" || e.button !== 0 || e.target.closest(".card, button, input, select, a, .dls")) return;
     bandBase = e.ctrlKey || e.shiftKey ? new Set(sel) : new Set();
     band = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
     mainEl.setPointerCapture(e.pointerId);

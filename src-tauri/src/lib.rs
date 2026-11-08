@@ -687,7 +687,15 @@ fn compress_video(state: State<'_, AppState>, path: String, target: i64) -> Stri
 #[tauri::command]
 async fn clip_open(path: String) -> Result<clip::Source, String> {
     let ff = ytdl::ffmpeg(&reqwest::Client::new(), &|_| {}).await?;
-    tauri::async_runtime::spawn_blocking(move || clip::open(&ff, &path)).await.map_err(|e| e.to_string())?
+    let src = tauri::async_runtime::spawn_blocking(move || clip::open(&ff, &path)).await.map_err(|e| e.to_string())??;
+    clip::warm(&src);
+    Ok(src)
+}
+
+/// Avancement de la copie de lecture rapide du studio
+#[tauri::command]
+fn clip_proxy(id: String) -> Option<clip::Proxy> {
+    clip::proxy(&id)
 }
 
 /// Exporte les passages choisis (montage) en MP4 dans le dossier des extraits ; apparaît dans l'onglet DL
@@ -1901,6 +1909,7 @@ pub fn run() {
             compress_info,
             compress_video,
             clip_open,
+            clip_proxy,
             clip_export,
             download_action,
             move_downloads,

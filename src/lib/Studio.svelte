@@ -3,7 +3,8 @@
   // (chacun avec sa piste audio et ses sous-titres) et les exporter en un MP4 partageable.
   import { fade, scale } from "svelte/transition";
   import Icon from "./Icon.svelte";
-  import { clipExport, clipOpen } from "./api.js";
+  import { untrack } from "svelte";
+  import { clipExport, clipOpen, clipProxy } from "./api.js";
   import { confirmAsk, flash, ui } from "./ui.svelte.js";
 
   /** path : vidéo (ou dossier) ; onexported() : export lancé */
@@ -23,23 +24,79 @@
   });
 
   // ---------- lecture ----------
+  // Deux modes : « direct » (flux converti à la volée depuis l'instant voulu : chaque saut redémarre la conversion)
+  // puis « rapide » dès que la copie 360p est prête (fichier normal : sauts instantanés, sous-titres affichés par le lecteur).
   let video = $state();
-  let base = $state(0); // instant de départ du flux en cours
-  let rel = $state(0); // temps dans le flux
+  let base = $state(0); // direct : instant de départ du flux
+  let rel = $state(0); // temps dans le flux / le fichier
   let paused = $state(true);
   let loading = $state(true);
   let audio = $state(null);
   let sub = $state(null);
   let nonce = $state(0);
   let stopAt = null;
-  const cur = $derived(base + rel);
+  let proxy = $state(null);
+  $effect(() => {
+    if (!src) return;
+    const id = setInterval(async () => {
+      proxy = await clipProxy(src.id).catch(() => null);
+      if (proxy?.ready || proxy?.error) clearInterval(id);
+    }, 1000);
+    return () => clearInterval(id);
+  });
+  const imageSub = $derived(sub != null && !!src?.subs.find((s) => s.n === sub)?.image);
+  // Les sous-titres en images (Blu-ray) ne passent que par le flux direct
+  const fast = $derived(!!proxy?.ready && !imageSub);
+  const cur = $derived(fast ? rel : base + rel);
   const D = $derived(src?.duration || 1);
-  const url = $derived(src ? `${src.stream}?t=${base.toFixed(2)}&a=${audio ?? -1}&s=${sub ?? -1}&h=540&k=${nonce}` : "");
+  const url = $derived(
+    !src ? "" : fast ? `${proxy.base}p${audio ?? "none"}.mp4` : `${src.stream}?t=${base.toFixed(2)}&a=${audio ?? -1}&s=${sub ?? -1}&h=540&k=${nonce}`,
+  );
+  // Passage direct ↔ rapide : on garde l'instant
+  let lastCur = 0;
+  let pending = null;
+  let wasFast = false;
+  $effect(() => {
+    const f = fast;
+    if (f === wasFast) return;
+    wasFast = f;
+    const t = lastCur;
+    wantPlay = !untrack(() => paused);
+    loading = true;
+    if (f) {
+      pending = t;
+      base = 0;
+      rel = t;
+    } else {
+      base = t;
+      rel = 0;
+      nonce++;
+    }
+  });
 
   let wantPlay = false;
   let seekTimer;
   function seek(t, play = !paused) {
     t = Math.min(Math.max(0, t), Math.max(0, D - 0.5));
+    if (fast && video) {
+      video.currentTime = t;
+      rel = lastCur = t;
+      if (play) video.play().catch(() => {});
+      return;
+    }
+    // Direct : déjà reçu → saut immédiat
+    if (video && t >= base) {
+      const r = t - base;
+      const b = video.buffered;
+      for (let i = 0; i < b.length; i++) {
+        if (r >= b.start(i) && r <= b.end(i) - 0.3) {
+          video.currentTime = r;
+          rel = r;
+          if (play) video.play().catch(() => {});
+          return;
+        }
+      }
+    }
     clearTimeout(seekTimer);
     base = t;
     rel = 0;
@@ -50,7 +107,18 @@
   }
   function onloaded() {
     loading = false;
+    if (pending != null && video) {
+      video.currentTime = pending;
+      rel = pending;
+      pending = null;
+    }
+    showSubs();
     if (wantPlay) video?.play().catch(() => {});
+  }
+  // Piste de sous-titres du mode rapide : visible tout de suite
+  function showSubs() {
+    if (!video) return;
+    for (const t of video.textTracks) t.mode = "showing";
   }
   function toggle() {
     if (!video) return;
@@ -61,6 +129,7 @@
   }
   function ontime() {
     rel = video.currentTime;
+    lastCur = cur;
     if (stopAt != null && cur >= stopAt) {
       video.pause();
       stopAt = null;
@@ -68,9 +137,20 @@
   }
   // Changer de piste : on reprend au même instant
   function setTracks(a, s) {
+    const t = cur;
+    const audioChanged = a !== audio;
     audio = a;
     sub = s;
-    seek(cur);
+    if (fast && !imageSub) {
+      // Rapide : changer d'audio = autre fichier (même instant) ; sous-titres = simple piste du lecteur
+      if (audioChanged) {
+        pending = t;
+        wantPlay = !paused;
+        loading = true;
+      } else setTimeout(showSubs, 50);
+      return;
+    }
+    seek(t);
   }
 
   // ---------- sélection ----------
@@ -224,7 +304,14 @@
       <b>Studio d'extraits</b>
       <span title={src?.path}>{src?.name ?? "Ouverture…"}</span>
     </div>
-    {#if src}<span class="chip">{src.width}×{src.height} · {src.vcodec.toUpperCase()}{src.hdr ? " · HDR" : ""}</span>{/if}
+    {#if src}
+      {#if fast}
+        <span class="chip fastc" title="Copie légère prête : sauts instantanés dans la timeline (l'export garde la qualité d'origine)"><Icon name="check" size={11} />Lecture rapide</span>
+      {:else if proxy && !proxy.ready && !proxy.error && !imageSub}
+        <span class="chip" title="Une copie légère se prépare en fond ; ensuite, les sauts dans la timeline seront instantanés">Lecture rapide · {Math.round(proxy.progress * 100)} %</span>
+      {/if}
+      <span class="chip">{src.width}×{src.height} · {src.vcodec.toUpperCase()}{src.hdr ? " · HDR" : ""}</span>
+    {/if}
     <button class="x" title="Fermer (Échap)" onclick={close}><Icon name="close" size={15} /></button>
   </header>
 
@@ -238,7 +325,11 @@
         <div class="screen">
           {#key nonce}
             <!-- svelte-ignore a11y_media_has_caption -->
-            <video bind:this={video} src={url} preload="auto" bind:paused ontimeupdate={ontime} onloadeddata={onloaded} onwaiting={() => (loading = true)} onplaying={() => (loading = false)} onclick={toggle}></video>
+            <video bind:this={video} src={url} crossorigin="anonymous" preload="auto" bind:paused ontimeupdate={ontime} onloadeddata={onloaded} onseeked={() => (loading = false)} onwaiting={() => (loading = true)} onplaying={() => (loading = false)} onclick={toggle}>
+              {#if fast && sub != null}
+                {#key sub}<track kind="subtitles" src="{proxy.base}s{sub}.vtt" srclang="fr" label="Sous-titres" default onload={showSubs} />{/key}
+              {/if}
+            </video>
           {/key}
           {#if loading}<span class="spin big"></span>{/if}
           {#if paused && !loading}<button class="bigplay" onclick={toggle} aria-label="Lecture"><Icon name="play" size={26} /></button>{/if}
@@ -347,7 +438,9 @@
   .ttl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .ttl b { font-size: 14.5px; }
   .ttl span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .chip { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: var(--chip); color: var(--text-2); }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: var(--chip); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .chip.fastc { background: rgb(34 197 94 / 0.14); color: var(--ok); }
+  .screen video::cue { font-size: 20px; background: rgb(0 0 0 / 0.55); }
   .x { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 9px; background: none; color: var(--muted); cursor: pointer; }
   .x:hover { background: var(--chip); color: var(--text); }
   .err, .wait { display: flex; align-items: center; gap: 10px; margin: auto; color: var(--muted); }

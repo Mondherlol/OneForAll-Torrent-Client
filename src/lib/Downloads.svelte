@@ -313,8 +313,10 @@
   .sbtn.hot, .ib.hot { color: #b45309; border-color: rgb(245 158 11 / 0.45); background: rgb(245 158 11 / 0.12); }
 
   ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  li { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 10px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
-  li:hover { border-color: var(--line-strong); }
+  li { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); cursor: pointer; user-select: none; transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s, background 0.12s; }
+  li:hover { border-color: var(--accent); background: var(--bg-2); box-shadow: 0 4px 14px rgb(0 0 0 / 0.08), 0 0 0 1px var(--accent); transform: translateY(-1px); }
+  li:active { transform: translateY(0); }
+  li:hover .title { color: var(--accent); }
   li.st-error { border-color: rgb(225 29 72 / 0.35); }
   .thumb { flex: none; width: 42px; height: 60px; border-radius: 7px; overflow: hidden; display: grid; place-items: center; background: var(--chip); color: var(--muted); }
   .thumb img { width: 100%; height: 100%; object-fit: cover; }
