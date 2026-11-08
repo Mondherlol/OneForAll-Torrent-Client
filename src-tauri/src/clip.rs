@@ -279,7 +279,7 @@ fn build_proxy(src: &Source) {
     #[cfg(windows)]
     c.creation_flags(0x0800_0000 | 0x0000_4000);
     c.args(["-v", "error", "-y", "-nostdin", "-nostats", "-progress", "pipe:1", "-i"]).arg(&src.path);
-    c.args(["-map", "0:v:0", "-vf", &format!("{}{scale}format=yuv420p", tonemap(src)), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-g", "24", "-an"]).arg(dir.join("v.mp4"));
+    c.args(["-map", "0:v:0", "-vf", &format!("{scale}{}format=yuv420p", tonemap(src)), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-g", "24", "-an"]).arg(dir.join("v.mp4"));
     for a in &src.audio {
         c.args(["-map", &format!("0:a:{}", a.n), "-vn", "-c:a", "aac", "-b:a", "96k", "-ac", "2"]).arg(dir.join(format!("a{}.m4a", a.n)));
     }
@@ -371,21 +371,19 @@ fn esc_filter(s: &str) -> String {
 /// Arguments ffmpeg (après -i) qui produisent l'image : HDR → SDR, sous-titres incrustés, redimensionnement.
 /// `t` = instant de départ (entrée déjà positionnée avec -ss) : les sous-titres texte en ont besoin pour rester calés.
 fn video_args(src: &Source, sub: Option<usize>, t: f64, height: i64) -> Vec<String> {
-    let tm = if src.hdr && has_zscale() {
-        "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv"
-    } else {
-        ""
-    };
+    // Réduire AVANT la conversion HDR → SDR : sur une 4K, convertir chaque pixel puis réduire est ~3× plus lent
+    // (WandaVision 4K HDR : plus lent que la lecture, l'aperçu ne démarrait jamais)
+    let tm = tonemap(src);
     let scale = if height > 0 && height < src.height { format!("scale=-2:{height}:flags=bicubic,") } else { String::new() };
     let track = sub.and_then(|n| src.subs.iter().find(|s| s.n == n));
     match track {
         Some(s) if s.image => {
-            let base = if tm.is_empty() { "null".to_string() } else { tm.to_string() };
-            let graph = format!("[0:v:0]{base}[b];[b][0:s:{}]overlay=(W-w)/2:(H-h)/2:eof_action=pass,{scale}format=yuv420p[v]", s.n);
+            // Sous-titres images : même réduction que l'image (leur canevas a la taille de la vidéo)
+            let (vs, ss) = if scale.is_empty() { ("null".to_string(), "null".to_string()) } else { (scale.trim_end_matches(',').to_string(), scale.trim_end_matches(',').to_string()) };
+            let graph = format!("[0:v:0]{vs},{tm}null[b];[0:s:{n}]{ss}[s];[b][s]overlay=(W-w)/2:(H-h)/2:eof_action=pass,format=yuv420p[v]", n = s.n);
             vec!["-filter_complex".into(), graph, "-map".into(), "[v]".into()]
         }
         Some(s) => {
-            let tm = if tm.is_empty() { String::new() } else { format!("{tm},") };
             let subs = match cached_sub(src, s.n) {
                 Some(f) => {
                     let fonts = f.with_file_name("fonts");
@@ -397,13 +395,10 @@ fn video_args(src: &Source, sub: Option<usize>, t: f64, height: i64) -> Vec<Stri
                     format!("subtitles=filename={}:si={}", esc_filter(&name), s.n)
                 }
             };
-            let chain = format!("setpts=PTS+{t:.3}/TB,{tm}{subs},setpts=PTS-STARTPTS,{scale}format=yuv420p");
+            let chain = format!("setpts=PTS+{t:.3}/TB,{scale}{tm}{subs},setpts=PTS-STARTPTS,format=yuv420p");
             vec!["-vf".into(), chain, "-map".into(), "0:v:0".into()]
         }
-        None => {
-            let tm = if tm.is_empty() { String::new() } else { format!("{tm},") };
-            vec!["-vf".into(), format!("{tm}{scale}format=yuv420p"), "-map".into(), "0:v:0".into()]
-        }
+        None => vec!["-vf".into(), format!("{scale}{tm}format=yuv420p"), "-map".into(), "0:v:0".into()],
     }
 }
 

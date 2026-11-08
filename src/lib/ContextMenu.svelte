@@ -5,6 +5,7 @@
   let el = $state();
   let pos = $state({ x: 0, y: 0 });
   let sub = $state(null); // index du sous-menu ouvert
+  let flip = $state(false); // pas de place à droite : sous-menus à gauche
 
   // Garde le menu dans la fenêtre
   $effect(() => {
@@ -12,6 +13,7 @@
     const { innerWidth: W, innerHeight: H } = window;
     const r = el.getBoundingClientRect();
     pos = { x: Math.min(ui.menu.x, W - r.width - 8), y: Math.min(ui.menu.y, H - r.height - 8) };
+    flip = pos.x + r.width + 260 > W;
   });
 
   $effect(() => {
@@ -62,7 +64,7 @@
             {#if item.sub}<Icon name="chevRight" size={14} />{/if}
           </button>
           {#if item.sub && sub === i}
-            <div class="menu submenu">
+            <div class="menu submenu" class:flip>
               {#each item.sub as s}
                 <button class="item" role="menuitem" onclick={() => run(s)}>
                   <span class="ic">{#if s.checked}<Icon name="check" size={14} />{/if}</span>
@@ -115,4 +117,5 @@
   .label { flex: 1; white-space: nowrap; }
   .sep { height: 1px; margin: 5px 8px; background: var(--line); }
   .submenu { position: absolute; left: calc(100% + 2px); top: -5px; animation: none; max-height: 320px; overflow-y: auto; }
+  .submenu.flip { left: auto; right: calc(100% + 2px); }
 </style>
