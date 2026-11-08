@@ -68,15 +68,64 @@ pub struct Item {
     pub title: String,
     /// Affiche (URL)
     pub art: Option<String>,
+    /// Numéro d'épisode et animé ? (pour trouver le générique sur AniSkip quand le fichier n'a pas de chapitres)
+    pub episode: Option<u32>,
+    pub anime: bool,
 }
 
 // ---------- fenêtre « Épisode suivant » ----------
 
-/// Proposée quand il reste moins de 90 s (générique de fin), compte à rebours de 15 s max
+/// Sans chapitres ni AniSkip : proposée quand il reste moins de 90 s ; compte à rebours de 15 s max
 const NEXT_AT_REMAINING_S: i64 = 90;
 const NEXT_COUNTDOWN_S: i64 = 15;
+/// Ce qui reste après le générique compte comme une « scène » à partir de 15 s (chapitres) / 40 s (AniSkip)
+const SCENE_MIN_S: f64 = 15.0;
 
-/// Choix fait dans la fenêtre : « next » (lancer maintenant / fin du compte à rebours) ou « cancel »
+/// Où en est la proposition « Épisode suivant » pour le fichier en cours
+#[derive(PartialEq, Clone, Copy, Debug)]
+enum Stage {
+    None,
+    /// Compte à rebours affiché : à zéro (ou à la fin du fichier) → épisode suivant
+    Countdown,
+    /// Il reste une scène après le générique : pas de compte à rebours, on attend le choix
+    Scene,
+    /// On regarde la scène / le générique : proposition à la fin du fichier
+    WaitEnd,
+    /// Fin du fichier : compte à rebours affiché, VLC est arrêté
+    EndCountdown,
+    /// Annulé : VLC s'arrêtera à la fin
+    Done,
+}
+
+/// Générique de fin d'après AniSkip (base communautaire), pour un animé sans chapitres
+fn aniskip_ending(title: &str, ep: u32, len: i64) -> Option<crate::chapters::Ending> {
+    static MAL: LazyLock<Mutex<HashMap<String, Option<i64>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    tauri::async_runtime::block_on(async {
+        let client = reqwest::Client::builder().user_agent(concat!("OneForAll/", env!("CARGO_PKG_VERSION"))).timeout(Duration::from_secs(8)).build().ok()?;
+        let cached = MAL.lock().unwrap().get(title).copied();
+        let mal = match cached {
+            Some(m) => m?,
+            None => {
+                // Identifiant MyAnimeList via AniList
+                let q = serde_json::json!({ "query": "query($s:String){Media(search:$s,type:ANIME){idMal}}", "variables": { "s": title } });
+                let v: serde_json::Value = client.post("https://graphql.anilist.co").json(&q).send().await.ok()?.json().await.ok()?;
+                let m = v["data"]["Media"]["idMal"].as_i64();
+                MAL.lock().unwrap().insert(title.to_string(), m);
+                m?
+            }
+        };
+        let url = format!("https://api.aniskip.com/v2/skip-times/{mal}/{ep}?types[]=ed&types[]=mixed-ed&episodeLength={len}");
+        let v: serde_json::Value = client.get(url).send().await.ok()?.json().await.ok()?;
+        let r = v["results"].as_array()?.iter().find(|r| matches!(r["skipType"].as_str(), Some("ed" | "mixed-ed")))?.clone();
+        let (start, end) = (r["interval"]["startTime"].as_f64()?, r["interval"]["endTime"].as_f64()?);
+        let after = (len as f64 - end).max(0.0);
+        // Sans chapitres on ne sait pas si c'est un aperçu : seule une longue suite compte comme scène
+        Some(crate::chapters::Ending { start, end, after, after_is_preview: after < 40.0 })
+    })
+}
+
+/// Choix fait dans la fenêtre : « next » (lancer maintenant / fin du compte à rebours), « skip » (passer
+/// le générique pour voir la scène qui suit) ou « cancel »
 static ACTION: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn overlay_action(action: &str) {
@@ -104,7 +153,8 @@ pub fn log(msg: &str) {
     }
 }
 
-fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64) {
+/// `mode` : « countdown » (compte à rebours), « scene » (une scène suit le générique, `after` s), « end » (fin du fichier)
+fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64, mode: &str, after: f64) {
     hide_overlay(app);
     *OVERLAY_DATA.lock().unwrap() = Some(serde_json::json!({
         "label": next.label,
@@ -112,6 +162,8 @@ fn show_overlay(app: &tauri::AppHandle, next: &Item, seconds: i64) {
         "name": next.path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
         "art": next.art,
         "seconds": seconds,
+        "mode": mode,
+        "after": after.round() as i64,
     }));
     let url = tauri::WebviewUrl::App("index.html".into());
     let (w, h) = (440.0, 156.0);
@@ -254,6 +306,8 @@ pub fn launch(app: tauri::AppHandle, vlc: &Path, items: Vec<Item>) -> Result<(),
     let port = free_port();
     let mut cmd = std::process::Command::new(vlc);
     cmd.args(["--extraintf", "rc", "--rc-host", &format!("127.0.0.1:{port}"), "--rc-quiet", "--no-one-instance"]);
+    // Plein écran, et reprise là où on s'était arrêté sans demander (qt-continue : 2 = toujours)
+    cmd.args(["--fullscreen", "--qt-continue=2"]);
     // Pistes préférées de la série du premier fichier, dès l'ouverture
     if let Some(p) = items.first().and_then(|i| i.series.as_deref()).and_then(prefs_for) {
         if let Some(a) = p.audio.filter(|a| !a.off) {
@@ -323,17 +377,23 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
     // Pistes déjà remises pour le fichier en cours (on ne retient les choix qu'après)
     let mut applied = false;
     let mut last_save = Instant::now();
-    // Fenêtre « Épisode suivant » : affichée pour quel fichier, annulée pour quel fichier
-    let mut offered: Option<String> = None;
-    let mut cancelled: Option<String> = None;
+    // Fenêtre « Épisode suivant » pour le fichier en cours
+    let mut stage = Stage::None;
+    // Générique de fin du fichier en cours (chapitres / AniSkip), calculé une fois par fichier
+    let mut ending_for: Option<String> = None;
+    let mut ending: Option<crate::chapters::Ending> = None;
+    // Reprise automatique déjà faite pour ce fichier
+    let mut resumed = false;
     loop {
         // Playlist actuelle (remplacée si un autre épisode est lancé depuis l'app)
         let items = shared.lock().unwrap().clone();
         let index: HashMap<String, usize> = items.iter().enumerate().map(|(i, it)| (crate::watch::key(&it.path.display().to_string()), i)).collect();
         let pending: Vec<String> = std::mem::take(&mut *cmds.lock().unwrap());
         if !pending.is_empty() {
-            offered = None;
-            cancelled = None;
+            if stage != Stage::None {
+                hide_overlay(app);
+            }
+            stage = Stage::None;
             if ask(&mut s, &(pending.join("\n") + "\n")).is_none() {
                 break;
             }
@@ -343,42 +403,91 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
         if snap.uri.is_some() && snap.uri != cur_uri {
             cur_uri = snap.uri.clone();
             applied = false;
-            if offered.take().is_some() {
+            resumed = false;
+            if !matches!(stage, Stage::None | Stage::Done) {
                 hide_overlay(app);
             }
+            stage = Stage::None;
         }
         let path = cur_uri.as_deref().and_then(crate::watch::mrl_to_path);
-        if let (Some(p), Some(t), Some(len)) = (path.as_deref(), snap.time, snap.length) {
-            if len > 0 {
-                st.watched.progress(p, t * 1000, len * 1000);
+        let pos = path.as_deref().and_then(|p| index.get(&crate::watch::key(p)).copied());
+        let (time, len) = (snap.time.unwrap_or(0), snap.length.unwrap_or(0));
+
+        // ----- reprise automatique là où on s'était arrêté -----
+        // (VLC le fait déjà avec qt-continue=2 quand il connaît le fichier ; sinon on l'y envoie)
+        if let (false, Some(p)) = (resumed, path.as_deref()) {
+            if len > 0 && !snap.stopped {
+                resumed = true;
+                let w = st.watched.get(&[p.to_string()]).remove(p);
+                if let Some(w) = w.filter(|w| !w.watched && w.pos_ms > 30_000 && w.pos_ms / 1000 < len - 30) {
+                    if time < 10 {
+                        let to = (w.pos_ms / 1000 - 3).max(0);
+                        log(&format!("reprise à {to} s : {p}"));
+                        if ask(&mut s, &format!("seek {to}\n")).is_none() {
+                            break;
+                        }
+                    }
+                }
             }
         }
-        let pos = path.as_deref().and_then(|p| index.get(&crate::watch::key(p)).copied());
+        if let (Some(p), true) = (path.as_deref(), len > 0) {
+            st.watched.progress(p, time * 1000, len * 1000);
+        }
+
+        // ----- générique de fin : chapitres du fichier, sinon AniSkip pour un animé -----
+        if len > 0 && ending_for != cur_uri {
+            ending_for = cur_uri.clone();
+            ending = path.as_deref().and_then(|p| crate::chapters::ending(&crate::chapters::read(Path::new(p)), len as f64));
+            if ending.is_none() {
+                if let Some(it) = pos.map(|i| &items[i]).filter(|it| it.anime) {
+                    if let Some(ep) = it.episode {
+                        ending = aniskip_ending(&it.title, ep, len);
+                    }
+                }
+            }
+            log(&format!("générique de fin : {:?}", ending));
+        }
 
         // ----- épisode suivant -----
         let next = pos.and_then(|i| items.get(i + 1));
-        if let (Some(next), Some(uri)) = (next, cur_uri.clone()) {
-            let remaining = match (snap.time, snap.length) {
-                (Some(t), Some(len)) if len > 0 => Some(len - t),
-                _ => None,
-            };
+        if let Some(next) = next {
+            let start_at = ending.as_ref().map(|e| e.start as i64).unwrap_or(len - NEXT_AT_REMAINING_S);
+            let scene = ending.as_ref().filter(|e| e.after >= SCENE_MIN_S && !e.after_is_preview).map(|e| e.after);
             if snap.stopped {
-                // Fin de l'épisode (VLC s'arrête après chaque fichier) : on enchaîne, sauf si annulé
-                if cancelled.as_deref() != Some(uri.as_str()) && offered.as_deref() == Some(uri.as_str()) {
-                    hide_overlay(app);
-                    offered = None;
-                    if ask(&mut s, "next\n").is_none() {
-                        break;
+                match stage {
+                    // Fin du fichier pendant le compte à rebours : on enchaîne
+                    Stage::Countdown => {
+                        hide_overlay(app);
+                        stage = Stage::None;
+                        if ask(&mut s, "next\n").is_none() {
+                            break;
+                        }
                     }
+                    // Scène regardée : maintenant on propose la suite
+                    Stage::WaitEnd => {
+                        show_overlay(app, next, 10, "end", 0.0);
+                        stage = Stage::EndCountdown;
+                    }
+                    _ => {}
                 }
-            } else if let Some(rem) = remaining {
-                if rem <= NEXT_AT_REMAINING_S && rem >= 3 && offered.as_deref() != Some(uri.as_str()) && cancelled.as_deref() != Some(uri.as_str()) {
-                    show_overlay(app, next, NEXT_COUNTDOWN_S.min(rem - 1));
-                    offered = Some(uri.clone());
-                } else if rem > NEXT_AT_REMAINING_S + 10 && offered.as_deref() == Some(uri.as_str()) {
-                    // Retour en arrière dans l'épisode : on retire la proposition
-                    hide_overlay(app);
-                    offered = None;
+            } else if len > 0 && time > 0 {
+                let rem = len - time;
+                match stage {
+                    Stage::None if time >= start_at && rem >= 3 => {
+                        if let Some(after) = scene {
+                            show_overlay(app, next, 0, "scene", after);
+                            stage = Stage::Scene;
+                        } else {
+                            show_overlay(app, next, NEXT_COUNTDOWN_S.min(rem - 1), "countdown", 0.0);
+                            stage = Stage::Countdown;
+                        }
+                    }
+                    // Retour en arrière avant le générique : on retire la proposition
+                    Stage::Countdown | Stage::Scene if time < start_at - 10 => {
+                        hide_overlay(app);
+                        stage = Stage::None;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -428,12 +537,22 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
                 hide_overlay(app);
                 match action.as_str() {
                     "next" => {
-                        offered = None;
+                        stage = Stage::None;
                         if ask(&mut s, "next\n").is_none() {
                             return st.watched.save();
                         }
                     }
-                    _ => cancelled = cur_uri.clone(),
+                    // Passer le générique pour voir la scène qui suit ; la suite sera proposée à la fin du fichier
+                    "skip" => {
+                        stage = Stage::WaitEnd;
+                        if let Some(e) = &ending {
+                            if ask(&mut s, &format!("seek {}\n", e.end.ceil() as i64)).is_none() {
+                                return st.watched.save();
+                            }
+                        }
+                    }
+                    // Annuler : pendant une scène, on proposera quand même la suite à la fin ; sinon VLC s'arrête
+                    _ => stage = if stage == Stage::Scene { Stage::WaitEnd } else { Stage::Done },
                 }
                 break;
             }
