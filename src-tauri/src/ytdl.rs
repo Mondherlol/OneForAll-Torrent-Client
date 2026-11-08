@@ -387,6 +387,10 @@ pub struct Info {
     pub sizes: Vec<(i64, i64)>,
     /// Taille estimée en MP3
     pub mp3: i64,
+    /// Identifiant pour calculer la courbe du son (version audio la plus légère), vide si trop long
+    pub wave: String,
+    #[serde(skip)]
+    pub wave_url: String,
     /// En-têtes exigés par le serveur pour lire `preview` (YouTube refuse un autre User-Agent)
     #[serde(skip)]
     pub headers: Vec<(String, String)>,
@@ -442,6 +446,18 @@ pub async fn info(exe: &Path, url: &str) -> Result<Info, String> {
         heights,
         sizes,
         mp3,
+        wave: String::new(),
+        wave_url: if duration > 0.0 && duration <= 3.0 * 3600.0 {
+            formats
+                .iter()
+                .filter(|f| f["vcodec"].as_str() == Some("none") && f["acodec"].as_str().is_some_and(|a| a != "none") && f["url"].as_str().is_some_and(|u| u.starts_with("http")) && f["protocol"].as_str().is_none_or(|p| p.starts_with("http")))
+                .min_by(|a, b| a["tbr"].as_f64().unwrap_or(1e9).total_cmp(&b["tbr"].as_f64().unwrap_or(1e9)))
+                .and_then(|f| f["url"].as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            String::new()
+        },
         headers: v["http_headers"]
             .as_object()
             .map(|h| h.iter().filter(|(k, _)| k.as_str() != "Sec-Fetch-Mode").filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
@@ -455,16 +471,29 @@ static PREVIEWS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<
 
 /// Rend l'aperçu lisible par la fenêtre de l'app : elle le lira via le protocole « ofapv », relayé ici avec les bons en-têtes
 pub fn expose_preview(info: &mut Info) {
+    let id = format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    let mut map = PREVIEWS.lock().unwrap();
+    if map.len() > 40 {
+        map.clear();
+    }
+    if !info.wave_url.is_empty() {
+        info.wave = format!("{id}w");
+        map.insert(info.wave.clone(), (std::mem::take(&mut info.wave_url), info.headers.clone()));
+    }
     if info.preview.is_empty() {
         return;
     }
-    let id = format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
-    let mut map = PREVIEWS.lock().unwrap();
-    if map.len() > 20 {
-        map.clear();
-    }
     map.insert(id.clone(), (std::mem::take(&mut info.preview), info.headers.clone()));
     info.preview = if cfg!(windows) { format!("http://ofapv.localhost/{id}") } else { format!("ofapv://localhost/{id}") };
+}
+
+/// Courbe du son d'une vidéo en ligne (20 points par seconde), lue dans sa version audio la plus légère
+pub fn wave(ffdir: &Path, id: &str) -> Vec<u8> {
+    let Some((url, headers)) = PREVIEWS.lock().unwrap().get(id).cloned() else { return Vec::new() };
+    let ua = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v.clone()).unwrap_or_default();
+    let mut c = command(&ffdir.join("ffmpeg.exe"));
+    c.args(["-v", "error", "-nostdin", "-user_agent", &ua, "-i", &url, "-vn", "-ac", "1", "-ar", "1000", "-f", "s16le", "pipe:1"]);
+    crate::clip::peaks(c, 1000, 20)
 }
 
 /// Relais d'un aperçu : morceaux de 2 Mo au plus (la vidéo redemande la suite toute seule)
@@ -740,6 +769,28 @@ mod proxy_live {
                 println!("{range} → {} {:?} {} octets", res.status(), res.headers().get("content-range"), res.body().len());
                 assert_eq!(res.status(), 206);
             }
+        });
+    }
+}
+
+#[cfg(test)]
+mod wave_live {
+    use super::*;
+
+    /// cargo test wave_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn wave_live() {
+        tauri::async_runtime::block_on(async {
+            let c = reqwest::Client::new();
+            let exe = ytdlp(&c, &|_| {}).await.unwrap();
+            let ff = ffmpeg(&c, &|_| {}).await.unwrap();
+            let mut i = info(&exe, "https://www.youtube.com/watch?v=b32i4Pxkl28").await.unwrap();
+            expose_preview(&mut i);
+            let t = std::time::Instant::now();
+            let w = wave(&ff, &i.wave);
+            println!("courbe : {} points pour {} s en {:?}, max {:?}", w.len(), i.duration, t.elapsed(), w.iter().max());
+            assert!(w.len() > 1000);
         });
     }
 }

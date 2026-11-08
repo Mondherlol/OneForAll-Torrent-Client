@@ -2,6 +2,8 @@
   // Choix d'un extrait sur une timeline, avec la vidéo qui joue (aperçu en flux direct, rien n'est téléchargé)
   import { fade, scale } from "svelte/transition";
   import Icon from "./Icon.svelte";
+  import Wave from "./Wave.svelte";
+  import { mediaWave } from "./api.js";
 
   /** info : media_info ; start/end en secondes ; ondone({ start, end }) ; onclose() */
   let { info, start: s0 = 0, end: e0 = null, ondone, onclose } = $props();
@@ -13,6 +15,11 @@
   let paused = $state(true);
   let video = $state();
   let broken = $state(!info.preview);
+  // Courbe du son : repère les dialogues, les silences, la musique
+  let peaks = $state(null);
+  $effect(() => {
+    if (info.wave) mediaWave(info.wave).then((p) => (peaks = p)).catch(() => {});
+  });
   let track;
   let drag = null;
   // Lecture de l'extrait seul : on s'arrête à la fin
@@ -152,7 +159,7 @@
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="track" bind:this={track} onpointerdown={(e) => down(e, "seek")} onpointermove={move} onpointerup={up} onpointercancel={up}>
-    {#if info.thumb}<div class="film" style="background-image:url({info.thumb})"></div>{/if}
+    {#if peaks?.length}<Wave {peaks} perSec={20} from={0} to={D} />{:else if info.thumb}<div class="film" style="background-image:url({info.thumb})"></div>{/if}
     <div class="dim" style="left:0;width:{pct(start)}"></div>
     <div class="dim" style="left:{pct(end)};right:0"></div>
     <div class="sel" style="left:{pct(start)};width:{pct(end - start)}"></div>

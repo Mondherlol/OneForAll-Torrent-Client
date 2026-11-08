@@ -42,11 +42,14 @@ export const organizeShows = (groupKey = null) => invoke("organize_shows", { gro
 export const getDownloads = () => invoke("get_downloads");
 export const addDownloads = (urls, format, section) => invoke("add_downloads", { urls, format, section });
 export const mediaInfo = (url) => invoke("media_info", { url });
+export const mediaWave = (id) => invoke("media_wave", { id });
 export const compressInfo = (path) => invoke("compress_info", { path });
 export const compressVideo = (path, target) => invoke("compress_video", { path, target });
 export const clipOpen = (path) => invoke("clip_open", { path });
 export const clipProxy = (id) => invoke("clip_proxy", { id });
-export const clipExport = (path, segs, height, name) => invoke("clip_export", { path, segs, height, name });
+export const clipWave = (id, audio) => invoke("clip_wave", { id, audio });
+export const clipAsset = (path) => invoke("clip_asset", { path });
+export const clipExport = (path, segs, height, name, layers = [], music = [], volume = 1) => invoke("clip_export", { path, segs, height, name, layers, music, volume });
 export const downloadAction = (ids, action) => invoke("download_action", { ids, action });
 export const moveDownloads = (ids, dir) => invoke("move_downloads", { ids, dir });
 export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });

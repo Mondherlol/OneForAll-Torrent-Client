@@ -401,7 +401,7 @@ impl Direct {
         let mut parts = Vec::new();
         for (i, seg) in spec.segs.iter().enumerate() {
             let out = tmp.join(format!("p{i}.mp4"));
-            let args = crate::clip::export_args(&src, seg, spec.height, &out);
+            let args = crate::clip::export_full(&src, &spec, seg, &out, &tmp);
             let mut cmd = crate::clip::ffmpeg_in(&src);
             cmd.args(&args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| Fail::Fatal(format!("Lancement de ffmpeg impossible : {e}")))?;
@@ -1251,7 +1251,7 @@ mod clip_tests {
             crate::clip::Seg { start: 8.0, end: 14.0, audio: Some(1), sub: Some(1) },
         ];
         let dir = std::env::temp_dir().join("ofa-clip-job");
-        let id = d.add_clip(&crate::clip::Spec { path, segs, height: 720 }, &dir.display().to_string(), "montage.mp4");
+        let id = d.add_clip(&crate::clip::Spec { path, segs, height: 720, layers: vec![crate::clip::Layer { kind: "text".into(), start: 9.0, end: 13.0, x: 0.5, y: 0.15, size: 0.07, text: "VF puis VOSTFR, test".into(), color: "#ffd84d".into(), boxed: true, path: String::new() }, crate::clip::Layer { kind: "image".into(), start: 8.0, end: 14.0, x: 0.85, y: 0.8, size: 0.2, path: std::env::var("IMG").unwrap_or_default(), ..Default::default() }], music: vec![crate::clip::Music { path: std::env::var("MUSIC").unwrap_or_default(), start: 10.0, offset: 30.0, duration: 20.0, volume: 0.8 }], volume: 0.6 }, &dir.display().to_string(), "montage.mp4");
         tauri::async_runtime::block_on(d.run(&id, Arc::new(AtomicBool::new(false))));
         let f = d.get(&id).unwrap();
         println!("{:?} {} {} o err={}", f.st, f.name, f.size, f.error);

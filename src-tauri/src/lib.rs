@@ -692,6 +692,27 @@ async fn clip_open(path: String) -> Result<clip::Source, String> {
     Ok(src)
 }
 
+
+/// Courbe du son d'une piste (studio), 50 points par seconde
+#[tauri::command]
+async fn clip_wave(id: String, audio: usize) -> Result<Vec<u8>, String> {
+    let src = clip::source(&id).ok_or("Vidéo fermée")?;
+    tauri::async_runtime::spawn_blocking(move || clip::wave(&src, audio)).await.map_err(|e| e.to_string())
+}
+
+/// Musique ou image ajoutée dans le studio
+#[tauri::command]
+async fn clip_asset(path: String) -> Result<clip::Asset, String> {
+    let ff = ytdl::ffmpeg(&reqwest::Client::new(), &|_| {}).await?;
+    tauri::async_runtime::spawn_blocking(move || clip::asset(&ff, &path)).await.map_err(|e| e.to_string())?
+}
+
+/// Courbe du son d'une vidéo en ligne (timeline « Un passage »)
+#[tauri::command]
+async fn media_wave(id: String) -> Result<Vec<u8>, String> {
+    let ff = ytdl::ffmpeg(&reqwest::Client::new(), &|_| {}).await?;
+    tauri::async_runtime::spawn_blocking(move || ytdl::wave(&ff, &id)).await.map_err(|e| e.to_string())
+}
 /// Avancement de la copie de lecture rapide du studio
 #[tauri::command]
 fn clip_proxy(id: String) -> Option<clip::Proxy> {
@@ -700,7 +721,17 @@ fn clip_proxy(id: String) -> Option<clip::Proxy> {
 
 /// Exporte les passages choisis (montage) en MP4 dans le dossier des extraits ; apparaît dans l'onglet DL
 #[tauri::command]
-fn clip_export(state: State<'_, AppState>, path: String, segs: Vec<clip::Seg>, height: i64, name: Option<String>) -> Result<String, String> {
+#[allow(clippy::too_many_arguments)]
+fn clip_export(
+    state: State<'_, AppState>,
+    path: String,
+    segs: Vec<clip::Seg>,
+    height: i64,
+    name: Option<String>,
+    layers: Option<Vec<clip::Layer>>,
+    music: Option<Vec<clip::Music>>,
+    volume: Option<f64>,
+) -> Result<String, String> {
     if segs.is_empty() {
         return Err("Aucun passage".into());
     }
@@ -716,7 +747,8 @@ fn clip_export(state: State<'_, AppState>, path: String, segs: Vec<clip::Seg>, h
     });
     let name = if name.to_lowercase().ends_with(".mp4") { name } else { format!("{name}.mp4") };
     let name: String = name.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '_' } else { c }).collect();
-    Ok(state.direct.add_clip(&clip::Spec { path, segs, height }, &dir, &name))
+    let spec = clip::Spec { path, segs, height, layers: layers.unwrap_or_default(), music: music.unwrap_or_default(), volume: volume.unwrap_or(1.0) };
+    Ok(state.direct.add_clip(&spec, &dir, &name))
 }
 #[tauri::command]
 async fn download_action(state: State<'_, AppState>, ids: Vec<String>, action: String) -> Result<(), String> {
@@ -1910,6 +1942,9 @@ pub fn run() {
             compress_video,
             clip_open,
             clip_proxy,
+            clip_wave,
+            media_wave,
+            clip_asset,
             clip_export,
             download_action,
             move_downloads,

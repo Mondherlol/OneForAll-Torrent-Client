@@ -4,7 +4,9 @@
   import { fade, scale } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import { untrack } from "svelte";
-  import { clipExport, clipOpen, clipProxy } from "./api.js";
+  import { open as pickFile } from "@tauri-apps/plugin-dialog";
+  import Wave from "./Wave.svelte";
+  import { clipAsset, clipExport, clipOpen, clipProxy, clipWave } from "./api.js";
   import { confirmAsk, flash, ui } from "./ui.svelte.js";
 
   /** path : vidéo (ou dossier) ; onexported() : export lancé */
@@ -130,6 +132,7 @@
   function ontime() {
     rel = video.currentTime;
     lastCur = cur;
+    syncMusic();
     if (stopAt != null && cur >= stopAt) {
       video.pause();
       stopAt = null;
@@ -158,7 +161,59 @@
   let end = $state(60);
   let track;
   let drag = null;
-  const pct = (t) => `${(t / D) * 100}%`;
+  // Zoom : portion visible [va, vb] de la vidéo (molette = zoom autour du curseur, Maj+molette = défiler)
+  let va = $state(0);
+  let vb = $state(60);
+  let fitted = false;
+  $effect(() => {
+    if (src && !fitted) {
+      fitted = true;
+      va = 0;
+      vb = src.duration || 60;
+    }
+  });
+  const span = $derived(Math.max(0.5, vb - va));
+  const pct = (t) => `${((t - va) / span) * 100}%`;
+  const wpct = (d) => `${(d / span) * 100}%`;
+  function zoom(factor, center = (va + vb) / 2) {
+    const ns = Math.min(Math.max(span * factor, 2), D);
+    let a = center - (center - va) * (ns / span);
+    a = Math.min(Math.max(0, a), Math.max(0, D - ns));
+    va = a;
+    vb = a + ns;
+  }
+  function pan(dt) {
+    const a = Math.min(Math.max(0, va + dt), Math.max(0, D - span));
+    vb = a + span;
+    va = a;
+  }
+  function onwheel(e) {
+    e.preventDefault();
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) pan(((e.deltaX || e.deltaY) / (track?.clientWidth || 800)) * span);
+    else zoom(e.deltaY > 0 ? 1.25 : 0.8, at(e));
+  }
+  // La tête de lecture sort de la vue pendant la lecture : la vue suit
+  $effect(() => {
+    if (!paused && (cur > vb || cur < va) && span < D) pan(cur - va - span * 0.1);
+  });
+  const fitAll = () => ((va = 0), (vb = D));
+  const fitSel = () => {
+    const pad = Math.max(1, (end - start) * 0.15);
+    va = Math.max(0, start - pad);
+    vb = Math.min(D, end + pad);
+  };
+
+  // Courbe du son de la piste choisie (une fois par piste)
+  let waves = $state({});
+  $effect(() => {
+    if (!src || audio == null || waves[audio]) return;
+    const n = audio;
+    waves[n] = [];
+    clipWave(src.id, n)
+      .then((p) => (waves[n] = p))
+      .catch(() => {});
+  });
+  const peaks = $derived(audio != null ? waves[audio] : null);
   const two = (n) => String(n).padStart(2, "0");
   function fmt(t, tenth = false) {
     t = Math.max(0, t || 0);
@@ -173,7 +228,7 @@
   };
   function at(e) {
     const r = track.getBoundingClientRect();
-    return Math.min(Math.max(0, (e.clientX - r.left) / r.width), 1) * D;
+    return va + Math.min(Math.max(0, (e.clientX - r.left) / r.width), 1) * span;
   }
   let dragT = $state(null);
   function down(e, what) {
@@ -221,6 +276,146 @@
     seek(which === "start" ? start : Math.max(0, end - 2), false);
   }
 
+  // ---------- calques (texte / image) et musiques ----------
+  let layers = $state([]);
+  let music = $state([]);
+  let volume = $state(1); // son de la vidéo
+  let picked = $state(null); // calque ou musique sélectionné (id)
+  let uid = 0;
+  const pickedLayer = $derived(layers.find((l) => l.id === picked));
+  const pickedMusic = $derived(music.find((m) => m.id === picked));
+  const COLORS = ["#ffffff", "#ffd84d", "#ff5a5a", "#4cc2ff", "#7dff8a", "#111111"];
+
+  function addText() {
+    const l = { id: ++uid, kind: "text", start, end, x: 0.5, y: 0.82, size: 0.07, text: "Ton texte", color: "#ffffff", boxed: true };
+    layers = [...layers, l];
+    picked = l.id;
+  }
+  async function addImage() {
+    const p = await pickFile({ title: "Image à ajouter", filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif", "bmp"] }] });
+    if (typeof p !== "string") return;
+    try {
+      const a = await clipAsset(p);
+      const l = { id: ++uid, kind: "image", start, end, x: 0.82, y: 0.2, size: 0.25, path: p, url: a.url, name: a.name };
+      layers = [...layers, l];
+      picked = l.id;
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  async function addMusic() {
+    const p = await pickFile({ title: "Musique à ajouter", filters: [{ name: "Sons", extensions: ["mp3", "m4a", "aac", "wav", "ogg", "opus", "flac", "mp4", "webm", "mkv"] }] });
+    if (typeof p !== "string") return;
+    try {
+      const a = await clipAsset(p);
+      if (a.kind !== "audio") return flash("Ce fichier n'a pas de son");
+      const m = { id: ++uid, path: p, url: a.url, name: a.name, start, offset: 0, total: a.duration, duration: Math.min(a.duration || end - start, D - start), volume: 0.8 };
+      music = [...music, m];
+      picked = m.id;
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  function removePicked() {
+    layers = layers.filter((l) => l.id !== picked);
+    music = music.filter((m) => m.id !== picked);
+    picked = null;
+  }
+  // Calé sur la sélection actuelle
+  function fitPicked() {
+    if (pickedLayer) Object.assign(pickedLayer, { start, end });
+    if (pickedMusic) Object.assign(pickedMusic, { start, duration: Math.min(end - start, (pickedMusic.total || 1e9) - pickedMusic.offset) });
+  }
+
+  // Glisser un bloc sur sa piste (déplacer, ou tirer un bord)
+  let bdrag = null;
+  function bdown(e, item, mode) {
+    e.preventDefault();
+    e.stopPropagation();
+    picked = item.id;
+    bdrag = { item, mode, t0: at(e), s0: item.start, e0: item.end, d0: item.duration, o0: item.offset };
+    lanes.setPointerCapture(e.pointerId);
+  }
+  function bmove(e) {
+    if (!bdrag) return;
+    const { item, mode, t0, s0, e0, d0, o0 } = bdrag;
+    const dt = Math.round((at(e) - t0) * 10) / 10;
+    if (item.kind) {
+      const len = e0 - s0;
+      if (mode === "move") {
+        item.start = Math.min(Math.max(0, s0 + dt), D - len);
+        item.end = item.start + len;
+      } else if (mode === "l") item.start = Math.min(Math.max(0, s0 + dt), item.end - 0.3);
+      else item.end = Math.max(Math.min(D, e0 + dt), item.start + 0.3);
+    } else if (mode === "move") item.start = Math.min(Math.max(0, s0 + dt), D - 0.3);
+    else if (mode === "r") item.duration = Math.max(0.3, Math.min(d0 + dt, (item.total || 1e9) - item.offset, D - item.start));
+    else {
+      const d = Math.min(Math.max(dt, -o0, -s0), d0 - 0.3);
+      item.start = s0 + d;
+      item.offset = o0 + d;
+      item.duration = d0 - d;
+    }
+  }
+  const bup = () => (bdrag = null);
+  // Molette : écouteur non passif (sinon impossible d'empêcher la page de défiler pendant le zoom)
+  $effect(() => {
+    const el = lanes;
+    if (!el) return;
+    el.addEventListener("wheel", onwheel, { passive: false });
+    return () => el.removeEventListener("wheel", onwheel);
+  });
+  let lanes = $state();
+
+  // Placer un calque en le glissant sur la vidéo
+  let sw = $state(0);
+  let sh = $state(0);
+  const stage = $derived.by(() => {
+    const ar = src?.width && src?.height ? src.width / src.height : 16 / 9;
+    let w = sw, h = sw / ar;
+    if (h > sh) ((h = sh), (w = sh * ar));
+    return { w, h, l: (sw - w) / 2, t: (sh - h) / 2 };
+  });
+  let stageEl;
+  let sdrag = null;
+  function sdown(e, l) {
+    e.preventDefault();
+    e.stopPropagation();
+    picked = l.id;
+    sdrag = l;
+    stageEl.setPointerCapture(e.pointerId);
+  }
+  function smove(e) {
+    if (!sdrag) return;
+    const r = stageEl.getBoundingClientRect();
+    sdrag.x = Math.min(Math.max(0, (e.clientX - r.left) / r.width), 1);
+    sdrag.y = Math.min(Math.max(0, (e.clientY - r.top) / r.height), 1);
+  }
+  const visible = (l) => (cur >= l.start && cur <= l.end) || l.id === picked;
+
+  // Aperçu des musiques : calées sur la vidéo
+  let players = {};
+  function syncMusic(force = false) {
+    for (const m of music) {
+      const el = players[m.id];
+      if (!el) continue;
+      el.volume = Math.min(1, m.volume);
+      const inside = cur >= m.start && cur < m.start + m.duration;
+      if (inside && !paused) {
+        const want = m.offset + (cur - m.start);
+        if (force || Math.abs(el.currentTime - want) > 0.35) el.currentTime = want;
+        if (el.paused) el.play().catch(() => {});
+      } else if (!el.paused) el.pause();
+    }
+  }
+  $effect(() => {
+    paused;
+    music.length;
+    untrack(() => syncMusic(true));
+  });
+  $effect(() => {
+    if (video) video.volume = Math.min(1, volume);
+  });
+
   // ---------- pistes ----------
   const LANG = { fre: "Français", fra: "Français", fr: "Français", jpn: "Japonais", ja: "Japonais", eng: "Anglais", en: "Anglais", spa: "Espagnol", ger: "Allemand", deu: "Allemand", ita: "Italien", kor: "Coréen", chi: "Chinois", zho: "Chinois", por: "Portugais", ara: "Arabe", rus: "Russe" };
   const audioName = (a) => {
@@ -267,7 +462,15 @@
     const list = segs.length ? segs : [{ start, end, audio, sub }];
     busy = true;
     try {
-      await clipExport(src.path, list.map((s) => ({ start: s.start, end: s.end, audio: s.audio, sub: s.sub })), height, name || null);
+      await clipExport(
+        src.path,
+        list.map((s) => ({ start: s.start, end: s.end, audio: s.audio, sub: s.sub })),
+        height,
+        name || null,
+        layers.map(({ kind, start, end, x, y, size, text = "", color = "#ffffff", boxed = false, path = "" }) => ({ kind, start, end, x, y, size, text, color, boxed, path })),
+        music.map(({ path, start, offset, duration, volume }) => ({ path, start, offset, duration, volume })),
+        volume,
+      );
       flash("Export lancé — suis-le dans l'onglet DL");
       onexported?.();
       ui.studio = null;
@@ -283,7 +486,8 @@
   }
 
   function key(e) {
-    if (ui.confirm || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+    if (ui.confirm || e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
+    if ((e.key === "Delete" || e.key === "Backspace") && picked != null) return removePicked();
     if (e.key === "Escape") close();
     else if (e.key === " ") (e.preventDefault(), toggle());
     else if (e.key === "ArrowLeft") seek(cur - (e.shiftKey ? 1 : 5));
@@ -322,7 +526,7 @@
   {:else}
     <div class="body">
       <div class="left">
-        <div class="screen">
+        <div class="screen" bind:clientWidth={sw} bind:clientHeight={sh}>
           {#key nonce}
             <!-- svelte-ignore a11y_media_has_caption -->
             <video bind:this={video} src={url} crossorigin="anonymous" preload="auto" bind:paused ontimeupdate={ontime} onloadeddata={onloaded} onseeked={() => (loading = false)} onwaiting={() => (loading = true)} onplaying={() => (loading = false)} onclick={toggle}>
@@ -333,7 +537,30 @@
           {/key}
           {#if loading}<span class="spin big"></span>{/if}
           {#if paused && !loading}<button class="bigplay" onclick={toggle} aria-label="Lecture"><Icon name="play" size={26} /></button>{/if}
+          <!-- Calques : aperçu fidèle, à glisser pour les placer -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="stage" bind:this={stageEl} style="left:{stage.l}px;top:{stage.t}px;width:{stage.w}px;height:{stage.h}px" onpointermove={smove} onpointerup={() => (sdrag = null)} onpointercancel={() => (sdrag = null)}>
+            {#each layers as l (l.id)}
+              {#if visible(l)}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="lay"
+                  class:picked={l.id === picked}
+                  class:ghost={!(cur >= l.start && cur <= l.end)}
+                  style="left:{l.x * 100}%;top:{l.y * 100}%"
+                  onpointerdown={(e) => sdown(e, l)}
+                >
+                  {#if l.kind === "image"}
+                    <img src={l.url} alt="" style="width:{l.size * stage.w}px" draggable="false" />
+                  {:else}
+                    <span class="txt" class:boxed={l.boxed} style="font-size:{l.size * stage.h}px;color:{l.color}">{l.text}</span>
+                  {/if}
+                </div>
+              {/if}
+            {/each}
+          </div>
         </div>
+        {#each music as m (m.id)}<audio bind:this={players[m.id]} src={m.url} preload="auto"></audio>{/each}
 
         <div class="ctl">
           <button class="ib" onclick={toggle} title="Lecture / pause (espace)"><Icon name={paused ? "play" : "pause"} size={15} /></button>
@@ -347,14 +574,49 @@
         </div>
 
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="track" bind:this={track} onpointerdown={(e) => down(e, "seek")} onpointermove={move} onpointerup={up} onpointercancel={up}>
-          {#each segs as s, i}<div class="mark" style="left:{pct(s.start)};width:{pct(s.end - s.start)}" title="Passage {i + 1}"></div>{/each}
+        <div class="tl" bind:this={lanes} onpointermove={bmove} onpointerup={bup} onpointercancel={bup}>
+          <div class="lane" title="Textes et images (par-dessus la vidéo)">
+            <span class="ltag"><Icon name="image" size={11} /></span>
+            {#each layers as l (l.id)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="blk lay-b" class:on={l.id === picked} style="left:{pct(l.start)};width:{wpct(l.end - l.start)}" onpointerdown={(e) => bdown(e, l, "move")}>
+                <span class="eg l" onpointerdown={(e) => bdown(e, l, "l")}></span>
+                <span class="bl">{l.kind === "image" ? l.name : l.text}</span>
+                <span class="eg r" onpointerdown={(e) => bdown(e, l, "r")}></span>
+              </div>
+            {/each}
+          </div>
+          <div class="track" bind:this={track} onpointerdown={(e) => down(e, "seek")} onpointermove={move} onpointerup={up} onpointercancel={up}>
+          <Wave {peaks} perSec={50} from={va} to={vb} />
+          {#each segs as s, i}<div class="mark" style="left:{pct(s.start)};width:{wpct(s.end - s.start)}" title="Passage {i + 1}"></div>{/each}
           <div class="dim" style="left:0;width:{pct(start)}"></div>
           <div class="dim" style="left:{pct(end)};right:0"></div>
-          <div class="sel" style="left:{pct(start)};width:{pct(end - start)}"></div>
+          <div class="sel" style="left:{pct(start)};width:{wpct(end - start)}"></div>
           <div class="head" style="left:{pct(dragT ?? cur)}"></div>
           <div class="h" style="left:{pct(start)}" onpointerdown={(e) => down(e, "start")} role="slider" aria-label="Début" aria-valuenow={start} tabindex="-1"><span></span></div>
           <div class="h" style="left:{pct(end)}" onpointerdown={(e) => down(e, "end")} role="slider" aria-label="Fin" aria-valuenow={end} tabindex="-1"><span></span></div>
+          </div>
+          <div class="lane" title="Musiques (mixées avec le son de la vidéo)">
+            <span class="ltag"><Icon name="audio" size={11} /></span>
+            {#each music as m (m.id)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="blk mus-b" class:on={m.id === picked} style="left:{pct(m.start)};width:{wpct(m.duration)}" onpointerdown={(e) => bdown(e, m, "move")}>
+                <span class="eg l" onpointerdown={(e) => bdown(e, m, "l")}></span>
+                <span class="bl">♪ {m.name}</span>
+                <span class="eg r" onpointerdown={(e) => bdown(e, m, "r")}></span>
+              </div>
+            {/each}
+          </div>
+          <div class="zrow">
+            <span>{fmt(va)}</span>
+            <span class="sp"></span>
+            <button class="zb" onclick={() => zoom(0.5, cur)} title="Zoomer (molette sur la timeline)"><Icon name="plus" size={12} /></button>
+            <button class="zb" onclick={() => zoom(2, cur)} title="Dézoomer"><b>−</b></button>
+            <button class="zb t" onclick={fitSel} title="Cadrer la sélection">Sélection</button>
+            <button class="zb t" onclick={fitAll} title="Toute la vidéo">Tout</button>
+            <span class="sp"></span>
+            <span>{fmt(vb)}</span>
+          </div>
         </div>
 
         <div class="selrow">
@@ -375,6 +637,9 @@
             {/each}
             {#if !src.audio.length}<span class="muted">Pas de son</span>{/if}
           </div>
+          {#if src.audio.length}
+            <label class="vol"><Icon name="audio" size={13} />Son de la vidéo <input type="range" min="0" max="2" step="0.05" bind:value={volume} /><b>{Math.round(volume * 100)} %</b></label>
+          {/if}
         </section>
         <section>
           <h4>Sous-titres</h4>
@@ -384,6 +649,42 @@
               <button class:on={sub === s.n} onclick={() => setTracks(audio, s.n)}>{subName(s)}</button>
             {/each}
           </div>
+        </section>
+
+        <section>
+          <h4>Ajouter</h4>
+          <div class="adds">
+            <button onclick={addText}><Icon name="tag" size={13} />Texte</button>
+            <button onclick={addImage}><Icon name="image" size={13} />Image</button>
+            <button onclick={addMusic}><Icon name="audio" size={13} />Musique</button>
+          </div>
+          {#if pickedLayer || pickedMusic}
+            <div class="edit">
+              {#if pickedLayer?.kind === "text"}
+                <textarea bind:value={pickedLayer.text} rows="2" spellcheck="false"></textarea>
+                <label class="rng">Taille <input type="range" min="0.03" max="0.2" step="0.005" bind:value={pickedLayer.size} /></label>
+                <div class="sw">
+                  {#each COLORS as c}<button class:on={pickedLayer.color === c} style="background:{c}" title={c} aria-label="Couleur {c}" onclick={() => (pickedLayer.color = c)}></button>{/each}
+                  <label class="chk"><input type="checkbox" bind:checked={pickedLayer.boxed} />Fond</label>
+                </div>
+              {:else if pickedLayer}
+                <span class="en" title={pickedLayer.name}>{pickedLayer.name}</span>
+                <label class="rng">Taille <input type="range" min="0.05" max="1" step="0.01" bind:value={pickedLayer.size} /></label>
+              {:else if pickedMusic}
+                <span class="en" title={pickedMusic.name}>♪ {pickedMusic.name}</span>
+                <label class="rng">Volume <input type="range" min="0" max="2" step="0.05" bind:value={pickedMusic.volume} /><b>{Math.round(pickedMusic.volume * 100)} %</b></label>
+                <span class="muted">Commence à {fmt(pickedMusic.offset, true)} dans la musique · tire le bord gauche du bloc pour en sauter le début</span>
+              {/if}
+              <div class="erow">
+                <span class="muted">{fmt(pickedLayer?.start ?? pickedMusic.start)} → {fmt(pickedLayer?.end ?? pickedMusic.start + pickedMusic.duration)}</span>
+                <span class="sp"></span>
+                <button class="tiny w" onclick={fitPicked} title="Mettre sur la sélection actuelle">Caler</button>
+                <button class="tiny" onclick={removePicked} title="Supprimer (Suppr)"><Icon name="trash" size={12} /></button>
+              </div>
+            </div>
+          {:else}
+            <p class="muted">Ils couvrent la sélection actuelle ; déplace-les sur leur piste, et glisse texte / image directement sur la vidéo.</p>
+          {/if}
         </section>
 
         <section class="mont">
@@ -466,7 +767,44 @@
   .mini:hover { color: var(--text); border-color: var(--accent); }
   .mini b { color: var(--accent); }
 
-  .track { position: relative; height: 46px; margin: 0 8px; border-radius: 10px; background: var(--chip); cursor: pointer; touch-action: none; user-select: none; }
+  .tl { display: flex; flex-direction: column; gap: 4px; }
+  .track { position: relative; height: 58px; margin: 0 8px; border-radius: 8px; background: var(--chip); cursor: pointer; touch-action: none; user-select: none; overflow: hidden; }
+  .lane { position: relative; height: 24px; margin: 0 8px; border-radius: 6px; background: color-mix(in srgb, var(--chip) 55%, transparent); overflow: hidden; touch-action: none; user-select: none; }
+  .ltag { position: absolute; left: 4px; top: 50%; translate: 0 -50%; color: var(--muted); opacity: 0.6; pointer-events: none; }
+  .blk { position: absolute; top: 2px; bottom: 2px; min-width: 6px; display: flex; align-items: center; border-radius: 5px; cursor: grab; font-size: 11px; font-weight: 650; color: white; overflow: hidden; box-sizing: border-box; }
+  .blk:active { cursor: grabbing; }
+  .lay-b { background: #8b5cf6; }
+  .mus-b { background: #10b981; }
+  .blk.on { box-shadow: 0 0 0 2px var(--text); z-index: 2; }
+  .bl { flex: 1; min-width: 0; padding: 0 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+  .eg { width: 7px; align-self: stretch; flex: none; cursor: ew-resize; background: rgb(255 255 255 / 0.25); }
+  .zrow { display: flex; align-items: center; gap: 4px; margin: 0 8px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .zb { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; height: 22px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text-2); font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; }
+  .zb:hover { border-color: var(--accent); color: var(--text); }
+  .track { --wave: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .stage { position: absolute; pointer-events: none; }
+  .lay { position: absolute; translate: -50% -50%; pointer-events: auto; cursor: move; line-height: 1.15; }
+  .lay.picked { outline: 2px dashed rgb(255 255 255 / 0.8); outline-offset: 3px; }
+  .lay.ghost { opacity: 0.45; }
+  .lay img { display: block; }
+  .txt { display: block; white-space: pre; text-align: center; font-family: Arial, sans-serif; font-weight: 800; text-shadow: 0 0 3px #000, 0 0 6px rgb(0 0 0 / 0.8); }
+  .txt.boxed { text-shadow: none; background: rgb(0 0 0 / 0.55); padding: 0.18em 0.35em; }
+  .vol, .rng { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  .vol input, .rng input { flex: 1; accent-color: var(--accent); }
+  .vol b, .rng b { min-width: 42px; text-align: right; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .adds { display: flex; gap: 6px; }
+  .adds button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: 32px; border-radius: 8px; border: 1px dashed var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .adds button:hover { border-style: solid; border-color: var(--accent); color: var(--accent); }
+  .edit { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding: 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+  .edit textarea { resize: vertical; min-height: 44px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text); font: inherit; font-size: 13px; }
+  .edit textarea:focus { outline: none; border-color: var(--accent); }
+  .en { font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sw { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  .sw button { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--line-strong); cursor: pointer; padding: 0; }
+  .sw button.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--ring); }
+  .chk { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; font-size: 12.5px; color: var(--text-2); }
+  .erow { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .tiny.w { width: auto; padding: 0 8px; font: inherit; font-size: 12px; font-weight: 650; border: 1px solid var(--line); }
   .mark { position: absolute; top: 0; bottom: 0; background: rgb(76 194 255 / 0.18); border-left: 1px solid rgb(76 194 255 / 0.5); border-right: 1px solid rgb(76 194 255 / 0.5); }
   .dim { position: absolute; top: 0; bottom: 0; background: rgb(0 0 0 / 0.18); }
   .sel { position: absolute; top: 0; bottom: 0; background: var(--accent-soft); border-top: 3px solid var(--accent); border-bottom: 3px solid var(--accent); box-sizing: border-box; }

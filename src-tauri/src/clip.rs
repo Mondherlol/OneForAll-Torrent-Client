@@ -63,6 +63,54 @@ pub struct Spec {
     pub segs: Vec<Seg>,
     /// Hauteur maximale de sortie (1080, 720…)
     pub height: i64,
+    /// Textes et images par-dessus la vidéo (temps de la vidéo source)
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+    /// Musiques ajoutées (temps de la vidéo source)
+    #[serde(default)]
+    pub music: Vec<Music>,
+    /// Volume du son de la vidéo (1 = normal)
+    #[serde(default = "one")]
+    pub volume: f64,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+/// Calque texte ou image
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Layer {
+    /// « text » ou « image »
+    pub kind: String,
+    pub start: f64,
+    pub end: f64,
+    /// Centre du calque, en fraction de l'image (0..1)
+    pub x: f64,
+    pub y: f64,
+    /// Texte : hauteur des lettres en fraction de la hauteur de l'image ; image : largeur en fraction de la largeur
+    pub size: f64,
+    pub text: String,
+    /// « #rrggbb »
+    pub color: String,
+    /// Fond sombre derrière le texte
+    pub boxed: bool,
+    pub path: String,
+}
+
+/// Musique ajoutée
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Music {
+    pub path: String,
+    /// Début dans la vidéo source (s)
+    pub start: f64,
+    /// Début dans le fichier musique (s)
+    pub offset: f64,
+    /// Durée utilisée (s)
+    pub duration: f64,
+    pub volume: f64,
 }
 
 static SOURCES: LazyLock<Mutex<HashMap<String, Source>>> = LazyLock::new(Default::default);
@@ -435,6 +483,208 @@ pub fn export_args(src: &Source, seg: &Seg, height: i64, out: &Path) -> Vec<Stri
     a
 }
 
+/// Image de sortie (largeur, hauteur) pour une hauteur max donnée
+fn out_size(src: &Source, height: i64) -> (i64, i64) {
+    let h = if height > 0 && height < src.height { height } else { src.height.max(2) };
+    let w = ((src.width as f64 * h as f64 / src.height.max(1) as f64) / 2.0).round() as i64 * 2;
+    (w.max(2), h)
+}
+
+fn hex_color(c: &str) -> String {
+    let c = c.trim().trim_start_matches('#');
+    if c.len() == 6 && c.chars().all(|x| x.is_ascii_hexdigit()) { format!("0x{c}") } else { "white".into() }
+}
+
+/// Export complet d'un passage : image (pistes, sous-titres, HDR) + calques texte / image + musiques mixées.
+/// `work` : dossier temporaire (textes des calques).
+pub fn export_full(src: &Source, spec: &Spec, seg: &Seg, out: &Path, work: &Path) -> Vec<String> {
+    let dur = (seg.end - seg.start).max(0.1);
+    let (ow, oh) = out_size(src, spec.height);
+    let layers: Vec<&Layer> = spec.layers.iter().filter(|l| l.end > seg.start && l.start < seg.end).collect();
+    let music: Vec<&Music> = spec.music.iter().filter(|m| m.start < seg.end && m.start + m.duration > seg.start).collect();
+    let name = Path::new(&src.path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let mut a: Vec<String> = ["-v", "error", "-y", "-hide_banner", "-nostdin", "-nostats", "-progress", "pipe:1"].map(String::from).to_vec();
+    a.extend(["-ss".into(), format!("{:.3}", seg.start), "-t".into(), format!("{dur:.3}"), "-i".into(), name]);
+    // Entrées : images, puis musiques (chacune calée sur le passage)
+    let mut next = 1;
+    let mut image_in = HashMap::new();
+    for (i, l) in layers.iter().enumerate() {
+        if l.kind == "image" && Path::new(&l.path).is_file() {
+            a.extend(["-loop".into(), "1".into(), "-t".into(), format!("{dur:.3}"), "-i".into(), l.path.clone()]);
+            image_in.insert(i, next);
+            next += 1;
+        }
+    }
+    let mut music_in = Vec::new();
+    for m in &music {
+        let from = (seg.start - m.start).max(0.0);
+        let len = (m.start + m.duration).min(seg.end) - m.start.max(seg.start);
+        if len <= 0.05 || !Path::new(&m.path).is_file() {
+            continue;
+        }
+        a.extend(["-ss".into(), format!("{:.3}", m.offset + from), "-t".into(), format!("{len:.3}"), "-i".into(), m.path.clone()]);
+        music_in.push((next, (m.start - seg.start).max(0.0), m.volume));
+        next += 1;
+    }
+
+    // Image de base (même chaîne que l'aperçu : réduction, HDR, sous-titres), étiquette [vb]
+    let base = video_args(src, seg.sub, seg.start, spec.height);
+    let mut graph = if base[0] == "-filter_complex" { base[1].replace("[v]", "[vb]") } else { format!("[0:v:0]{}[vb]", base[1]) };
+    let mut last = "vb".to_string();
+    let font = esc_filter("C:/Windows/Fonts/arialbd.ttf");
+    for (i, l) in layers.iter().enumerate() {
+        let (a0, b0) = ((l.start - seg.start).max(0.0), (l.end - seg.start).min(dur));
+        let enable = format!("enable='between(t,{a0:.3},{b0:.3})'");
+        let (x, y) = (l.x.clamp(0.0, 1.0) * ow as f64, l.y.clamp(0.0, 1.0) * oh as f64);
+        let lbl = format!("l{i}");
+        if l.kind == "image" {
+            let Some(k) = image_in.get(&i) else { continue };
+            let w = ((l.size.clamp(0.02, 1.0) * ow as f64) / 2.0).round() as i64 * 2;
+            graph.push_str(&format!(";[{k}:v]scale={w}:-2,format=rgba[im{i}];[{last}][im{i}]overlay=x={x:.1}-w/2:y={y:.1}-h/2:{enable}[{lbl}]"));
+        } else if !l.text.trim().is_empty() {
+            let tf = work.join(format!("t{i}.txt"));
+            if std::fs::write(&tf, l.text.as_bytes()).is_err() {
+                continue;
+            }
+            let fs = (l.size.clamp(0.01, 0.5) * oh as f64).round().max(8.0);
+            let style = if l.boxed {
+                format!("box=1:boxcolor=black@0.55:boxborderw={}", (fs * 0.35).round())
+            } else {
+                format!("borderw={}:bordercolor=black@0.85", (fs / 14.0).round().max(2.0))
+            };
+            graph.push_str(&format!(
+                ";[{last}]drawtext=fontfile={font}:textfile={}:fontsize={fs}:fontcolor={}:line_spacing={}:x={x:.1}-tw/2:y={y:.1}-th/2:{style}:{enable}[{lbl}]",
+                esc_filter(&tf.display().to_string()),
+                hex_color(&l.color),
+                (fs * 0.2).round()
+            ));
+        } else {
+            continue;
+        }
+        last = lbl;
+    }
+    graph.push_str(&format!(";[{last}]format=yuv420p[vout]"));
+
+    // Son : piste de la vidéo (volume réglable) + musiques, mixés
+    let mut mix = Vec::new();
+    if let Some(n) = seg.audio.filter(|n| src.audio.iter().any(|t| t.n == *n)) {
+        graph.push_str(&format!(";[0:a:{n}]volume={:.2},aresample=48000,aformat=channel_layouts=stereo[a0]", spec.volume.max(0.0)));
+        mix.push("[a0]".to_string());
+    }
+    for (j, (k, delay, vol)) in music_in.iter().enumerate() {
+        let ms = (delay * 1000.0).round() as i64;
+        graph.push_str(&format!(";[{k}:a]volume={vol:.2},aresample=48000,aformat=channel_layouts=stereo,adelay={ms}|{ms}[m{j}]"));
+        mix.push(format!("[m{j}]"));
+    }
+    let has_audio = !mix.is_empty();
+    if mix.len() > 1 {
+        graph.push_str(&format!(";{}amix=inputs={}:duration=longest:normalize=0,apad[aout]", mix.concat(), mix.len()));
+    } else if let Some(one) = mix.first() {
+        graph.push_str(&format!(";{one}apad[aout]"));
+    }
+    a.extend(["-filter_complex".into(), graph, "-map".into(), "[vout]".into()]);
+    if has_audio {
+        a.extend(["-map".into(), "[aout]".into(), "-c:a".into(), "aac".into(), "-b:a".into(), "192k".into()]);
+    } else {
+        // Muet : piste silencieuse quand même (les passages doivent avoir le même format pour être assemblés)
+        a.extend(["-f".into(), "lavfi".into(), "-i".into(), "anullsrc=r=48000:cl=stereo".into(), "-map".into(), format!("{next}:a"), "-c:a".into(), "aac".into(), "-b:a".into(), "128k".into()]);
+    }
+    a.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"].map(String::from));
+    a.extend(["-t".into(), format!("{dur:.3}"), "-movflags".into(), "+faststart".into(), out.display().to_string()]);
+    a
+}
+
+/// Courbe du son : un pic (0..255) par 1/`per_sec` s, normalisé sur le fichier
+pub fn peaks(mut cmd: Command, rate: u32, per_sec: u32) -> Vec<u8> {
+    let Ok(mut child) = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return Vec::new() };
+    let mut out = child.stdout.take().unwrap();
+    let per = (rate / per_sec).max(1) as usize;
+    let mut raw = Vec::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let (mut n, mut peak) = (0usize, 0i32);
+    let mut odd: Option<u8> = None;
+    loop {
+        let got = match out.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(g) => g,
+        };
+        let mut bytes = buf[..got].to_vec();
+        if let Some(b) = odd.take() {
+            bytes.insert(0, b);
+        }
+        if bytes.len() % 2 == 1 {
+            odd = bytes.pop();
+        }
+        for s in bytes.chunks_exact(2) {
+            let v = (i16::from_le_bytes([s[0], s[1]]) as i32).abs();
+            peak = peak.max(v);
+            n += 1;
+            if n == per {
+                raw.push(peak);
+                n = 0;
+                peak = 0;
+            }
+        }
+    }
+    let _ = child.wait();
+    // Échelle douce (racine) : les dialogues restent visibles à côté des explosions
+    let max = raw.iter().copied().max().unwrap_or(1).max(1) as f64;
+    raw.iter().map(|&p| ((p as f64 / max).sqrt() * 255.0) as u8).collect()
+}
+
+/// Courbe du son d'une piste de la vidéo (50 points par seconde), gardée en cache
+pub fn wave(src: &Source, audio: usize) -> Vec<u8> {
+    let f = cache_dir(&src.id).join(format!("wave{audio}.bin"));
+    if let Ok(b) = std::fs::read(&f) {
+        if !b.is_empty() {
+            return b;
+        }
+    }
+    let mut c = ff_cmd("ffmpeg.exe");
+    c.args(["-v", "error", "-nostdin", "-i"]).arg(&src.path).args(["-map", &format!("0:a:{audio}"), "-vn", "-sn", "-dn", "-ac", "1", "-ar", "2000", "-f", "s16le", "pipe:1"]);
+    let p = peaks(c, 2000, 50);
+    let _ = std::fs::create_dir_all(cache_dir(&src.id));
+    let _ = std::fs::write(&f, &p);
+    p
+}
+
+/// Fichier ajouté au studio (musique ou image) : adresse pour l'aperçu, durée, dimensions
+#[derive(Serialize)]
+pub struct Asset {
+    pub url: String,
+    pub kind: String,
+    pub duration: f64,
+    pub width: i64,
+    pub height: i64,
+    pub name: String,
+}
+
+pub fn asset(ffdir: &Path, path: &str) -> Result<Asset, String> {
+    let _ = FF.set(ffdir.to_path_buf());
+    let p = Path::new(path);
+    if !p.is_file() {
+        return Err("Fichier introuvable".into());
+    }
+    let out = ff_cmd("ffprobe.exe").args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"]).arg(p).output().map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "Fichier illisible".to_string())?;
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let image = ["png", "jpg", "jpeg", "webp", "gif", "bmp"].contains(&ext.as_str());
+    let has_audio = streams.iter().any(|s| s["codec_type"] == "audio");
+    if !image && !has_audio {
+        return Err("Ni une image, ni un son".into());
+    }
+    let vid = streams.iter().find(|s| s["codec_type"] == "video");
+    Ok(Asset {
+        url: asset_url(p),
+        kind: if image { "image" } else { "audio" }.into(),
+        duration: v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0),
+        width: vid.and_then(|s| s["width"].as_i64()).unwrap_or(0),
+        height: vid.and_then(|s| s["height"].as_i64()).unwrap_or(0),
+        name: p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+    })
+}
+
 /// ffmpeg lancé dans le dossier de la vidéo (le filtre « subtitles » y lit le fichier par son seul nom)
 pub fn ffmpeg_in(src: &Source) -> Command {
     let mut c = ff_cmd("ffmpeg.exe");
@@ -464,20 +714,47 @@ fn server() -> u16 {
 }
 
 /// Fichier de lecture rapide (/f/<id>/<fichier>), avec reprise par plages : le lecteur saute où il veut instantanément
-fn serve_file(mut s: TcpStream, method: &str, rest: &str, range: Option<&str>, cors: &str) {
+fn serve_file(s: TcpStream, method: &str, rest: &str, range: Option<&str>, cors: &str) {
     let (id, name) = rest.split_once('/').unwrap_or(("", ""));
     let ok_name = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') && !name.contains("..");
-    let file = cache_dir(id).join(name);
-    let Some(len) = (ok_name && id.chars().all(|c| c.is_ascii_hexdigit()))
-        .then(|| std::fs::metadata(&file).ok())
-        .flatten()
-        .filter(|m| m.is_file())
-        .map(|m| m.len())
-    else {
+    let file = (ok_name && id.chars().all(|c| c.is_ascii_hexdigit())).then(|| cache_dir(id).join(name));
+    send_file(s, method, file.as_deref(), range, cors);
+}
+
+/// Musiques et images ajoutées dans le studio (/x/<jeton>) : seulement les fichiers choisis par l'utilisateur
+static ASSETS: LazyLock<Mutex<HashMap<String, PathBuf>>> = LazyLock::new(Default::default);
+
+pub fn asset_url(path: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    let token = format!("{:x}", h.finish());
+    ASSETS.lock().unwrap().insert(token.clone(), path.to_path_buf());
+    format!("http://127.0.0.1:{}/x/{token}", server())
+}
+
+fn mime(p: &Path) -> &'static str {
+    match p.extension().map(|e| e.to_string_lossy().to_lowercase()).as_deref() {
+        Some("vtt") => "text/vtt; charset=utf-8",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a" | "aac") => "audio/mp4",
+        Some("wav") => "audio/wav",
+        Some("ogg" | "opus") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "video/mp4",
+    }
+}
+
+fn send_file(mut s: TcpStream, method: &str, file: Option<&Path>, range: Option<&str>, cors: &str) {
+    let Some((file, len)) = file.and_then(|f| std::fs::metadata(f).ok().filter(|m| m.is_file()).map(|m| (f, m.len()))) else {
         let _ = s.write_all(format!("HTTP/1.1 404 Not Found\r\n{cors}Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
         return;
     };
-    let ctype = if name.ends_with(".vtt") { "text/vtt; charset=utf-8" } else { "video/mp4" };
+    let ctype = mime(file);
     let (start, end) = range
         .and_then(|r| r.strip_prefix("bytes="))
         .and_then(|r| r.split_once('-'))
@@ -541,6 +818,10 @@ fn handle(mut s: TcpStream) {
         return;
     }
     let (path, q) = target.split_once('?').unwrap_or((target, ""));
+    if let Some(token) = path.strip_prefix("/x/") {
+        let file = ASSETS.lock().unwrap().get(token).cloned();
+        return send_file(s, method, file.as_deref(), range.as_deref(), CORS);
+    }
     if let Some(rest) = path.strip_prefix("/f/") {
         return serve_file(s, method, rest, range.as_deref(), CORS);
     }
