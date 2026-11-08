@@ -68,9 +68,8 @@ pub struct Item {
     pub title: String,
     /// Affiche (URL)
     pub art: Option<String>,
-    /// Numéro d'épisode et animé ? (pour trouver le générique sur AniSkip quand le fichier n'a pas de chapitres)
+    /// Numéro d'épisode (pour trouver les génériques sur AniSkip quand le fichier n'a pas de chapitres)
     pub episode: Option<u32>,
-    pub anime: bool,
 }
 
 // ---------- fenêtre « Épisode suivant » ----------
@@ -108,10 +107,26 @@ fn aniskip(title: &str, ep: u32, len: i64) -> Skips {
         let mal = match cached {
             Some(m) => m?,
             None => {
-                // Identifiant MyAnimeList via AniList
-                let q = serde_json::json!({ "query": "query($s:String){Media(search:$s,type:ANIME){idMal}}", "variables": { "s": title } });
+                // Identifiant MyAnimeList via AniList — seulement si le titre trouvé correspond bien
+                // (une série qui n'est pas un animé ne doit pas tomber sur un animé au nom proche)
+                let q = serde_json::json!({
+                    "query": "query($s:String){Media(search:$s,type:ANIME){idMal title{romaji english native} synonyms}}",
+                    "variables": { "s": title }
+                });
                 let v: serde_json::Value = client.post("https://graphql.anilist.co").json(&q).send().await.ok()?.json().await.ok()?;
-                let m = v["data"]["Media"]["idMal"].as_i64();
+                let media = &v["data"]["Media"];
+                let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+                let want = norm(title);
+                let names: Vec<String> = ["romaji", "english", "native"]
+                    .iter()
+                    .filter_map(|k| media["title"][k].as_str())
+                    .chain(media["synonyms"].as_array().into_iter().flatten().filter_map(|s| s.as_str()))
+                    .map(norm)
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                let same = !want.is_empty() && names.iter().any(|n| *n == want || (want.len() >= 5 && (n.starts_with(&want) || want.starts_with(n.as_str()))));
+                let m = media["idMal"].as_i64().filter(|_| same);
+                log(&format!("AniList « {title} » → MAL {:?}{}", media["idMal"].as_i64(), if same { "" } else { " (titre différent : ignoré)" }));
                 MAL.lock().unwrap().insert(title.to_string(), m);
                 m?
             }
@@ -465,8 +480,10 @@ fn monitor(app: &tauri::AppHandle, port: u16, shared: &Arc<Mutex<Vec<Item>>>, cm
             let chaps = path.as_deref().map(|p| crate::chapters::read(Path::new(p))).unwrap_or_default();
             ending = crate::chapters::ending(&chaps, len as f64);
             opening = crate::chapters::opening(&chaps, len as f64);
+            // AniSkip pour tout épisode sans chapitres (pas seulement ceux classés « animé » : une série
+            // comme Black Clover peut être rangée en « Séries » ; la vérification du titre évite les erreurs)
             if ending.is_none() || opening.is_none() {
-                if let Some(it) = pos.map(|i| &items[i]).filter(|it| it.anime) {
+                if let Some(it) = pos.map(|i| &items[i]) {
                     if let Some(ep) = it.episode {
                         let (op, ed) = aniskip(&it.title, ep, len);
                         opening = opening.or(op);
@@ -685,5 +702,22 @@ mod tests {
         // Langue absente : même rang
         assert_eq!(pick_id(&audio, &Pick { off: false, lang: "Anglais".into(), nth: 2 }), Some(2));
         assert_eq!(pick_id(&audio, &Pick { off: true, ..Default::default() }), Some(-1));
+    }
+}
+
+#[cfg(test)]
+mod live {
+    /// Réseau : cargo test aniskip_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn aniskip_live() {
+        let m = crate::media::Media::from_raw(crate::qbit::RawTorrent { name: "Black.Clover.iNTEGRALE.MULTi.1080p.BluRay.x264-AMB3R".into(), ..Default::default() });
+        println!("titre déduit : « {} »", m.title);
+        let (op, ed) = super::aniskip(&m.title, 6, 1430);
+        println!("opening {op:?} — ending {ed:?}");
+        assert!(op.is_some() && ed.is_some());
+        // Une série qui n'est pas un animé ne doit rien trouver
+        let (op, ed) = super::aniskip("Breaking Bad", 3, 2800);
+        assert!(op.is_none() && ed.is_none());
     }
 }

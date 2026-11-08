@@ -869,7 +869,6 @@ struct ShowInfo {
     key: String,
     title: String,
     art: Option<String>,
-    anime: bool,
 }
 
 async fn show_info(state: &AppState, t: &qbit::RawTorrent) -> ShowInfo {
@@ -879,9 +878,7 @@ async fn show_info(state: &AppState, t: &qbit::RawTorrent) -> ShowInfo {
         tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
     }
     let art = state.art.get(&m.group_key, m.kind.as_str(), &m.title, m.year, &tmdb).await.map(|a| a.url);
-    // Animé : d'après le nom, ou d'après la source de l'affiche (AniList)
-    let anime = m.kind == Kind::Anime || state.art.kind_hints().get(&m.group_key).is_some_and(|k| k == "anime");
-    ShowInfo { key: m.group_key, title: m.title, art, anime }
+    ShowInfo { key: m.group_key, title: m.title, art }
 }
 
 fn play_item(show: &ShowInfo, path: PathBuf) -> player::Item {
@@ -893,7 +890,7 @@ fn play_item(show: &ShowInfo, path: PathBuf) -> player::Item {
         (None, Some(e)) => format!("Épisode {e}"),
         _ => String::new(),
     };
-    player::Item { path, series: Some(show.key.clone()), label, title: show.title.clone(), art: show.art.clone(), episode: ep.episode, anime: show.anime }
+    player::Item { path, series: Some(show.key.clone()), label, title: show.title.clone(), art: show.art.clone(), episode: ep.episode }
 }
 
 fn start_player(app: tauri::AppHandle, list: Vec<player::Item>) -> Result<usize, String> {
