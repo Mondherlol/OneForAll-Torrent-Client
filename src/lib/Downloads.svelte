@@ -2,14 +2,23 @@
   import { fly } from "svelte/transition";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { addDownloads, downloadAction, moveDownloads, openPath, openUrl, reveal } from "./api.js";
+  import Compress from "./Compress.svelte";
+  import Cutter from "./Cutter.svelte";
+  import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, wantArt } from "./ui.svelte.js";
 
-  /** downloads : liste de get_downloads ; onrefresh : recharge la liste tout de suite */
-  let { downloads, onrefresh } = $props();
+  /** downloads : liste de get_downloads ; onrefresh : recharge la liste tout de suite ; prefill : lien collé dans la recherche */
+  let { downloads, onrefresh, prefill = null } = $props();
 
   let links = $state("");
+  let inputEl = $state();
+  $effect(() => {
+    if (prefill?.text) {
+      links = prefill.text;
+      setTimeout(() => inputEl?.focus(), 50);
+    }
+  });
   const FILTERS = [
     { id: "all", label: "Tous" },
     { id: "active", label: "En cours" },
@@ -70,6 +79,52 @@
     return Number.isFinite(a) && Number.isFinite(b) && b > a ? `${a}-${b}` : "bad";
   });
 
+  // Un seul lien de vidéo : on récupère titre, durée, définitions et aperçu (timeline de l'extrait)
+  const isList = (u) => /[?&]list=/.test(u) && !/[?&]v=|youtu\.be\//.test(u);
+  const single = $derived.by(() => {
+    const l = links.trim().split(/\s+/).filter(Boolean);
+    return l.length === 1 && isMedia(l[0]) && !isSpotify(l[0]) && !isList(l[0]) ? l[0] : null;
+  });
+  let info = $state(null);
+  let infoFor = $state(null);
+  let infoErr = $state("");
+  $effect(() => {
+    const u = single;
+    info = null;
+    infoErr = "";
+    infoFor = u;
+    if (!u) return;
+    const t = setTimeout(() => {
+      mediaInfo(u)
+        .then((r) => infoFor === u && (info = r))
+        .catch((e) => infoFor === u && (infoErr = String(e)));
+    }, 350);
+    return () => clearTimeout(t);
+  });
+  const top = $derived(info?.heights?.[0] ?? 0);
+  const resName = (h) => (h >= 2000 ? "4K" : h >= 1400 ? "1440p" : `${h}p`);
+  const fmtLabel = (f) => (f.id === "max" ? (top ? `Max · ${resName(top)}` : "Meilleure qualité") : f.label);
+  // Définitions qui n'existent pas pour cette vidéo : inutile de les proposer
+  const fmtShown = $derived(FORMATS.filter((f) => !top || !["1080", "720"].includes(f.id) || top > +f.id));
+  $effect(() => {
+    if (!fmtShown.some((f) => f.id === format)) format = "max";
+  });
+  const dur = (t) => (t >= 3600 ? `${Math.floor(t / 3600)} h ${String(Math.floor((t % 3600) / 60)).padStart(2, "0")}` : `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`);
+
+  let cutter = $state(false);
+  function openCut() {
+    if (!single) return (cut = !cut);
+    if (!info) return flash(infoErr || "Chargement de la vidéo… réessaie dans une seconde");
+    cutter = true;
+  }
+  const hhmmss = (t) => {
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    return (h ? `${h}:${String(m).padStart(2, "0")}` : `${m}`) + `:${String(s).padStart(2, "0")}`;
+  };
+
+  let compressing = $state(null);
+  const isVideoFile = (d) => d.st === "done" && /\.(mp4|mkv|webm|mov|avi|m4v)$/i.test(d.name);
+
   async function add() {
     const urls = links.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (!urls.length) return flash("Colle au moins un lien https://…");
@@ -125,13 +180,15 @@
 
   const copy = (t) => navigator.clipboard.writeText(t).then(() => flash("Lien copié"));
   // Terminé : on ouvre le fichier. Sinon : la vidéo d'origine (pas encore de fichier), ou le dossier.
+  const web = (d) => d.media && d.media !== "compress";
   const openItem = (d) =>
-    (d.st === "done" ? openPath(d.path) : d.media ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
+    (d.st === "done" ? openPath(d.path) : web(d) ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
 
   function menu(e, d) {
     openMenu(e, [
       d.st === "done" && { label: "Ouvrir", icon: "open", run: () => openPath(d.path).catch((err) => flash(String(err))) },
-      d.media && { label: "Ouvrir la vidéo d'origine", icon: "open", run: () => openUrl(d.url).catch((err) => flash(String(err))) },
+      web(d) && { label: "Ouvrir la vidéo d'origine", icon: "open", run: () => openUrl(d.url).catch((err) => flash(String(err))) },
+      isVideoFile(d) && { label: "Compresser…", icon: "layers", run: () => (compressing = d) },
       { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(d.path, d.dir).catch((err) => flash(String(err))) },
       "-",
       (d.st === "running" || d.st === "queued") && { label: "Pause", icon: "pause", run: () => act([d], "pause") },
@@ -161,22 +218,38 @@
   <form class="add" onsubmit={(e) => (e.preventDefault(), add())}>
     <label class="field">
       <Icon name="link" size={15} />
-      <input bind:value={links} placeholder="Lien de fichier, ou de vidéo YouTube, X, Insta, TikTok…" spellcheck="false" />
+      <input bind:this={inputEl} bind:value={links} placeholder="Lien de fichier, ou de vidéo YouTube, X, Insta, TikTok…" spellcheck="false" />
     </label>
     <button class="btn primary" disabled={!links.trim()}><Icon name="download" size={14} />Télécharger</button>
   </form>
+  {#if single}
+    <div class="pv" transition:fly={{ y: -4, duration: 120 }}>
+      {#if info}
+        {#if info.thumb}<img src={info.thumb} alt="" referrerpolicy="no-referrer" />{/if}
+        <div class="pvt">
+          <b title={info.title}>{info.title}</b>
+          <span>{info.duration ? dur(info.duration) : ""}{top ? ` · jusqu'en ${resName(top)}` : ""}</span>
+        </div>
+      {:else if infoErr}
+        <span class="pverr"><Icon name="alert" size={13} />{infoErr}</span>
+      {:else}
+        <span class="pvload"><span class="spin"></span>Lecture de la vidéo…</span>
+      {/if}
+    </div>
+  {/if}
   {#if hasMedia}
     <div class="fmts" transition:fly={{ y: -4, duration: 120 }}>
       <span class="fl">Format</span>
-      {#each FORMATS as f}
+      {#each fmtShown as f}
         <button class:on={format === f.id} title={f.hint} onclick={() => (format = f.id)}>
-          <Icon name={f.id === "mp3" ? "audio" : "film"} size={13} />{f.label}
+          <Icon name={f.id === "mp3" ? "audio" : "film"} size={13} />{fmtLabel(f)}
         </button>
       {/each}
       <span class="vsep"></span>
-      <button class:on={cut} title="Télécharger seulement un passage (inutile de récupérer 3 h pour une minute)" onclick={() => (cut = !cut)}>
-        <Icon name="scissors" size={13} />Extrait
+      <button class:on={cut} title="Télécharger seulement un passage (inutile de récupérer 3 h pour une minute)" onclick={openCut}>
+        <Icon name="scissors" size={13} />{cut && section && section !== "bad" ? "Extrait · modifier" : "Extrait"}
       </button>
+      {#if cut}<button class="xcut" title="Tout télécharger" onclick={() => ((cut = false), (from = to = ""))}><Icon name="close" size={11} /></button>{/if}
       {#if cut}
         <span class="cut" class:bad={section === "bad" && to}>
           de <input bind:value={from} placeholder="0:00" spellcheck="false" />
@@ -184,6 +257,23 @@
         </span>
       {/if}
     </div>
+  {/if}
+  {#if cutter && info}
+    <Cutter
+      {info}
+      start={cut && Number.isFinite(secs(from || "0")) ? secs(from || "0") : 0}
+      end={cut && Number.isFinite(secs(to)) ? secs(to) : null}
+      onclose={() => (cutter = false)}
+      ondone={({ start, end }) => {
+        from = hhmmss(start);
+        to = hhmmss(end);
+        cut = true;
+        cutter = false;
+      }}
+    />
+  {/if}
+  {#if compressing}
+    <Compress d={compressing} onclose={() => (compressing = null)} ondone={() => ((compressing = null), onrefresh())} />
   {/if}
   {#if hasSpotify}
     <p class="sp-note"><Icon name="audio" size={13} />Spotify : chaque morceau est retrouvé sur YouTube et téléchargé en MP3 (playlists et albums compris).</p>
@@ -300,6 +390,16 @@
   .cut input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
   .cut.bad input { border-color: var(--err); }
   .kb.cutb { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+  .pv { display: flex; align-items: center; gap: 12px; margin-top: -4px; padding: 8px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); min-height: 40px; }
+  .pv img { width: 112px; height: 63px; object-fit: cover; border-radius: 8px; flex: none; }
+  .pvt { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .pvt b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pvt span { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pverr { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--err); padding: 0 6px; }
+  .pvload { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 0 6px; }
+  .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .fmts .xcut { width: 30px; padding: 0; justify-content: center; }
   .sp-note { display: flex; align-items: center; gap: 6px; margin: -4px 0 0; font-size: 12.5px; color: var(--muted); }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
   .top { display: flex; align-items: center; gap: 8px; min-width: 0; }

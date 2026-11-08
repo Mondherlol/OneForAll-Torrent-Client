@@ -76,11 +76,19 @@ pub struct Dl {
     pub note: String,
     /// Extrait seulement : « début-fin » en secondes (vide = tout)
     pub section: String,
+    /// Définition réellement téléchargée (« 1080p », « 4K »…)
+    pub res: String,
+    /// Compression : taille visée en octets
+    pub target: i64,
 }
 
 impl Dl {
     pub fn done(&self) -> i64 {
         self.segs.iter().map(|s| s.done).sum()
+    }
+    /// Fichier en cours d'écriture d'une compression
+    fn compress_tmp(&self) -> PathBuf {
+        Path::new(&self.dir).join(format!("{}.part.mp4", self.name))
     }
     pub fn section(&self) -> Option<(u32, u32)> {
         let (a, b) = self.section.split_once('-')?;
@@ -269,6 +277,96 @@ impl Direct {
         self.0.folders.lock().unwrap().0.get("dl").filter(|f| !f.trim().is_empty()).cloned().unwrap_or_else(downloads_dir)
     }
 
+    /// Compresse une vidéo vers `target` octets : nouvelle ligne « … (compressé).mp4 » à côté de l'originale
+    pub fn add_compress(&self, src: &str, target: i64) -> String {
+        let p = Path::new(src);
+        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "video".into());
+        let mb = (target as f64 / 1_048_576.0).round() as i64;
+        let name = unique_name(Path::new(&dir), &format!("{stem} ({mb} Mo).mp4"));
+        let id = self.add_media(src, "compress");
+        self.update(&id, |d| {
+            d.dir = dir;
+            d.name = name;
+            d.target = target;
+            d.size = target;
+        });
+        self.save();
+        id
+    }
+
+    /// ffmpeg : réencode en H.264 au débit qui donne la taille visée. Pause = on arrête, la reprise recommence.
+    async fn run_compress(&self, id: &str, stop: &Arc<AtomicBool>) -> Result<(), Fail> {
+        let d = self.get(id).ok_or(Fail::Fatal("Retiré".into()))?;
+        let me = self.clone();
+        let idc = id.to_string();
+        let note = move |s: String| {
+            me.update(&idc, |d| d.note = s);
+        };
+        let ff = crate::ytdl::ffmpeg(&self.0.client, &note).await.map_err(Fail::Retry)?;
+        let src = PathBuf::from(&d.url);
+        if !src.is_file() {
+            return Err(Fail::Fatal("La vidéo d'origine n'existe plus.".into()));
+        }
+        let probe = crate::ytdl::probe(&ff, &src).map_err(Fail::Fatal)?;
+        let tmp = d.compress_tmp();
+        let args = crate::ytdl::compress_args(&src, &tmp, &probe, d.target);
+        let (mut child, rx) = crate::ytdl::spawn_ff(&ff, &args).map_err(|e| Fail::Fatal(format!("Lancement de ffmpeg impossible : {e}")))?;
+        self.update(id, |x| x.note = "Compression…".into());
+        let mut errors = Vec::new();
+        let mut exited = None;
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                crate::ytdl::kill(&mut child);
+                let _ = std::fs::remove_file(&tmp);
+                self.update(id, |x| {
+                    x.note.clear();
+                    x.segs.clear();
+                });
+                return Ok(());
+            }
+            let mut got = false;
+            while let Ok(line) = rx.try_recv() {
+                got = true;
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                    let frac = (us / 1e6 / probe.duration.max(1.0)).clamp(0.0, 1.0);
+                    let size = d.target;
+                    self.update(id, |x| {
+                        x.segs = vec![Seg { start: 0, end: size, done: (size as f64 * frac) as i64 }];
+                        x.note = format!("Compression… {} %", (frac * 100.0) as i64);
+                    });
+                } else if !line.contains('=') && !line.trim().is_empty() {
+                    errors.push(line);
+                }
+            }
+            if exited.is_some() && !got {
+                break;
+            }
+            if exited.is_none() {
+                exited = child.try_wait().ok().flatten();
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        if !exited.is_some_and(|s| s.success()) || !tmp.is_file() {
+            let _ = std::fs::remove_file(&tmp);
+            let msg = errors.last().cloned().unwrap_or_else(|| "ffmpeg s'est arrêté".into());
+            return Err(Fail::Fatal(format!("Compression impossible : {}", msg.chars().take(200).collect::<String>())));
+        }
+        let fin = Path::new(&d.dir).join(&d.name);
+        std::fs::rename(&tmp, &fin).map_err(|e| Fail::Fatal(e.to_string()))?;
+        let len = std::fs::metadata(&fin).map(|m| m.len() as i64).unwrap_or(0);
+        self.update(id, |x| {
+            x.size = len;
+            x.segs = vec![Seg { start: 0, end: len, done: len }];
+            x.st = St::Done;
+            x.completion_on = now();
+            x.note.clear();
+            x.error.clear();
+        });
+        self.save();
+        Ok(())
+    }
+
     pub fn set_section(&self, id: &str, section: &str) {
         self.update(id, |d| d.section = section.to_string());
         self.save();
@@ -379,6 +477,7 @@ impl Direct {
                     if let Some(d) = removed.filter(|d| !d.name.is_empty()) {
                         // Un fichier inachevé ne sert à rien : il part toujours. Le fichier terminé, seulement si demandé.
                         let _ = std::fs::remove_file(d.part_path());
+                        let _ = std::fs::remove_file(d.compress_tmp());
                         if action == "delete_files" && d.final_path().is_file() {
                             trash::delete(d.final_path()).map_err(|e| format!("Suppression impossible : {e}"))?;
                         }
@@ -605,6 +704,9 @@ impl Direct {
 
     async fn run_once(&self, id: &str, stop: &Arc<AtomicBool>) -> Result<(), Fail> {
         let Some(d) = self.get(id) else { return Ok(()) };
+        if d.media == "compress" {
+            return self.run_compress(id, stop).await;
+        }
         if !d.media.is_empty() {
             return self.run_media(id, stop).await;
         }
@@ -740,6 +842,9 @@ impl Direct {
                         self.update(id, |x| x.thumb = t);
                     }
                     Line::Size(n) if n > 0 => est = n,
+                    Line::Height(h) if d.media != "mp3" => {
+                        self.update(id, |x| x.res = crate::ytdl::res_label(h));
+                    }
                     Line::Progress(done, total) => {
                         if done + 1024 * 1024 < cur_done {
                             base += cur_total.max(cur_done);

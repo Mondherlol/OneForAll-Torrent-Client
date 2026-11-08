@@ -50,7 +50,7 @@ pub fn label(fmt: &str) -> &'static str {
         "mp3" => "MP3",
         "1080" => "1080p",
         "720" => "720p",
-        _ => "Max",
+        _ => "Auto",
     }
 }
 
@@ -241,6 +241,7 @@ pub fn args(j: &Job) -> Vec<String> {
         "before_dl:OFAT %(title)s",
         "before_dl:OFAI %(thumbnail)s",
         "before_dl:OFAS %(filesize,filesize_approx)s",
+        "before_dl:OFAH %(height)s",
         "after_move:OFAF %(filepath)s",
     ] {
         a.push("-O".into());
@@ -301,6 +302,8 @@ pub enum Line {
     Title(String),
     Thumb(String),
     Size(i64),
+    /// Hauteur de la vidéo (1080…)
+    Height(i64),
     File(String),
     /// téléchargé, total (-1 = inconnu)
     Progress(i64, i64),
@@ -323,6 +326,8 @@ pub fn parse(line: &str) -> Line {
         Line::Thumb(t)
     } else if let Some(t) = field("OFAS ") {
         Line::Size(num(&t))
+    } else if let Some(t) = field("OFAH ") {
+        Line::Height(num(&t))
     } else if let Some(t) = field("OFAF ") {
         Line::File(t)
     } else if let Some(e) = line.strip_prefix("ERROR:") {
@@ -330,6 +335,205 @@ pub fn parse(line: &str) -> Line {
     } else {
         Line::Other
     }
+}
+
+/// « 1080p », « 4K »…
+pub fn res_label(h: i64) -> String {
+    match h {
+        h if h >= 2000 => "4K".into(),
+        h if h >= 1400 => "1440p".into(),
+        h if h > 0 => format!("{h}p"),
+        _ => String::new(),
+    }
+}
+
+/// Ce qu'on sait d'une vidéo avant de la télécharger (pour choisir un extrait ou un format)
+#[derive(serde::Serialize, Default)]
+pub struct Info {
+    pub title: String,
+    pub duration: f64,
+    pub thumb: String,
+    /// Flux lisible directement dans l'app (mp4 image + son), pour l'aperçu de l'extrait
+    pub preview: String,
+    /// Hauteurs disponibles, de la plus grande à la plus petite
+    pub heights: Vec<i64>,
+    /// En-têtes exigés par le serveur pour lire `preview` (YouTube refuse un autre User-Agent)
+    #[serde(skip)]
+    pub headers: Vec<(String, String)>,
+}
+
+pub async fn info(exe: &Path, url: &str) -> Result<Info, String> {
+    let (exe, url) = (exe.to_path_buf(), url.to_string());
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        command(&exe)
+            .args(["--ignore-config", "--no-update", "--no-playlist", "--encoding", "utf-8", "-j", "-f"])
+            .arg("b[height<=720][ext=mp4][vcodec!=none][acodec!=none]/b[ext=mp4]/b")
+            .arg("--")
+            .arg(&url)
+            .output()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Lancement de yt-dlp impossible : {e}"))?;
+    let v: serde_json::Value = match serde_json::from_slice(&out.stdout) {
+        Ok(v) => v,
+        Err(_) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let last = err.lines().rev().find(|l| l.starts_with("ERROR:")).unwrap_or("Vidéo illisible");
+            return Err(explain(last.trim_start_matches("ERROR:").trim()).0);
+        }
+    };
+    let mut heights: Vec<i64> = v["formats"]
+        .as_array()
+        .map(|f| f.iter().filter(|f| f["vcodec"].as_str() != Some("none")).filter_map(|f| f["height"].as_i64()).collect())
+        .unwrap_or_default();
+    heights.sort_unstable_by(|a, b| b.cmp(a));
+    heights.dedup();
+    let preview = v["url"].as_str().filter(|_| v["vcodec"].as_str() != Some("none")).unwrap_or("").to_string();
+    Ok(Info {
+        title: v["title"].as_str().unwrap_or("").into(),
+        duration: v["duration"].as_f64().unwrap_or(0.0),
+        thumb: v["thumbnail"].as_str().unwrap_or("").into(),
+        preview,
+        heights,
+        headers: v["http_headers"]
+            .as_object()
+            .map(|h| h.iter().filter(|(k, _)| k.as_str() != "Sec-Fetch-Mode").filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default(),
+    })
+}
+
+/// Aperçus en cours : id → (flux, en-têtes)
+static PREVIEWS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, (String, Vec<(String, String)>)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Rend l'aperçu lisible par la fenêtre de l'app : elle le lira via le protocole « ofapv », relayé ici avec les bons en-têtes
+pub fn expose_preview(info: &mut Info) {
+    if info.preview.is_empty() {
+        return;
+    }
+    let id = format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+    let mut map = PREVIEWS.lock().unwrap();
+    if map.len() > 20 {
+        map.clear();
+    }
+    map.insert(id.clone(), (std::mem::take(&mut info.preview), info.headers.clone()));
+    info.preview = if cfg!(windows) { format!("http://ofapv.localhost/{id}") } else { format!("ofapv://localhost/{id}") };
+}
+
+/// Relais d'un aperçu : morceaux de 2 Mo au plus (la vidéo redemande la suite toute seule)
+pub async fn proxy(req: tauri::http::Request<Vec<u8>>) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{Response, StatusCode};
+    let fail = |s: StatusCode| Response::builder().status(s).body(Vec::new()).unwrap();
+    let id = req.uri().path().trim_start_matches('/').to_string();
+    let Some((url, headers)) = PREVIEWS.lock().unwrap().get(&id).cloned() else { return fail(StatusCode::NOT_FOUND) };
+    const CHUNK: u64 = 2 * 1024 * 1024;
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok()).unwrap_or("bytes=0-").to_string();
+    let (a, b) = range.trim_start_matches("bytes=").split_once('-').unwrap_or(("0", ""));
+    let start: u64 = a.parse().unwrap_or(0);
+    let end = b.parse::<u64>().ok().map(|e| e.min(start + CHUNK - 1)).unwrap_or(start + CHUNK - 1);
+    let ua = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v.clone()).unwrap_or_default();
+    let client = reqwest::Client::new();
+    // Un flux tout juste créé refuse parfois la première requête (403) : quelques essais
+    let mut res = None;
+    for attempt in 0..5 {
+        let r = client.get(&url).header("Range", format!("bytes={start}-{end}")).header("User-Agent", &ua).send().await;
+        match r {
+            Ok(r) if r.status().is_success() => {
+                res = Some(r);
+                break;
+            }
+            Ok(r) if r.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE => return fail(StatusCode::RANGE_NOT_SATISFIABLE),
+            Ok(r) => crate::player::log(&format!("aperçu : {} (essai {})", r.status(), attempt + 1)),
+            Err(e) => crate::player::log(&format!("aperçu : {e}")),
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+    }
+    let Some(res) = res else { return fail(StatusCode::BAD_GATEWAY) };
+    let get = |k: &str| res.headers().get(k).and_then(|v| v.to_str().ok()).map(String::from);
+    let ctype = get("content-type").unwrap_or_else(|| "video/mp4".into());
+    let crange = get("content-range");
+    let Ok(body) = res.bytes().await else { return fail(StatusCode::BAD_GATEWAY) };
+    let total = crange.as_deref().and_then(|c| c.rsplit('/').next()).and_then(|t| t.parse::<u64>().ok());
+    let last = start + body.len() as u64 - 1;
+    let mut out = Response::builder()
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header("Content-Type", ctype)
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Length", body.len().to_string())
+        .header("Access-Control-Allow-Origin", "*");
+    out = out.header("Content-Range", format!("bytes {start}-{last}/{}", total.map(|t| t.to_string()).unwrap_or("*".into())));
+    out.body(body.to_vec()).unwrap_or_else(|_| fail(StatusCode::INTERNAL_SERVER_ERROR))
+}
+
+// ---------- compression (ffmpeg) ----------
+
+/// Durée (s), largeur, hauteur, débit audio (bit/s) d'une vidéo
+#[derive(serde::Serialize, Default, Clone)]
+pub struct Probe {
+    pub duration: f64,
+    pub width: i64,
+    pub height: i64,
+    pub audio: i64,
+    pub size: i64,
+}
+
+pub fn probe(ffdir: &Path, path: &Path) -> Result<Probe, String> {
+    let out = command(&ffdir.join("ffprobe.exe"))
+        .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"])
+        .arg(path)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| "Vidéo illisible".to_string())?;
+    let streams = v["streams"].as_array().cloned().unwrap_or_default();
+    let video = streams.iter().find(|s| s["codec_type"] == "video").ok_or("Pas d'image dans ce fichier")?;
+    let audio = streams.iter().find(|s| s["codec_type"] == "audio");
+    let n = |x: &serde_json::Value| x.as_str().and_then(|s| s.parse::<f64>().ok()).or(x.as_f64()).unwrap_or(0.0);
+    Ok(Probe {
+        duration: n(&v["format"]["duration"]),
+        width: video["width"].as_i64().unwrap_or(0),
+        height: video["height"].as_i64().unwrap_or(0),
+        audio: audio.map(|a| n(&a["bit_rate"]) as i64).filter(|b| *b > 0).map(|b| b.min(128_000)).unwrap_or(if audio.is_some() { 128_000 } else { 0 }),
+        size: std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0),
+    })
+}
+
+/// Réglages pour viser `target` octets : (débit vidéo bit/s, hauteur de sortie, débit audio bit/s)
+pub fn plan(p: &Probe, target: i64) -> (i64, i64, i64) {
+    let audio = if p.audio == 0 { 0 } else if target < 12_000_000 { 64_000 } else { 96_000.min(p.audio.max(64_000)) };
+    let total = (target as f64 * 8.0 * 0.95 / p.duration.max(1.0)) as i64;
+    let video = (total - audio).max(80_000);
+    // Moins de débit → image plus petite, sinon c'est de la bouillie
+    let max_h = match video {
+        v if v < 400_000 => 360,
+        v if v < 900_000 => 480,
+        v if v < 2_000_000 => 720,
+        v if v < 4_500_000 => 1080,
+        _ => 4320,
+    };
+    (video, p.height.min(max_h), audio)
+}
+
+pub fn compress_args(src: &Path, dst: &Path, p: &Probe, target: i64) -> Vec<String> {
+    let (vb, h, ab) = plan(p, target);
+    let mut a: Vec<String> = vec!["-y".into(), "-hide_banner".into(), "-nostats".into(), "-progress".into(), "pipe:1".into(), "-i".into(), src.display().to_string()];
+    a.extend(["-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p"].map(String::from));
+    a.extend(["-b:v".into(), vb.to_string(), "-maxrate".into(), (vb * 3 / 2).to_string(), "-bufsize".into(), (vb * 2).to_string()]);
+    if h < p.height {
+        a.extend(["-vf".into(), format!("scale=-2:{h}")]);
+    }
+    if ab > 0 {
+        a.extend(["-c:a".into(), "aac".into(), "-b:a".into(), ab.to_string()]);
+    } else {
+        a.push("-an".into());
+    }
+    a.extend(["-movflags".into(), "+faststart".into(), dst.display().to_string()]);
+    a
+}
+
+/// Lance un exécutable du dossier ffmpeg (sortie ligne par ligne dans le canal)
+pub fn spawn_ff(ffdir: &Path, args: &[String]) -> std::io::Result<(Child, std::sync::mpsc::Receiver<String>)> {
+    spawn(&ffdir.join("ffmpeg.exe"), args)
 }
 
 /// Nom du site, affiché tant que le titre n'est pas connu
@@ -442,5 +646,54 @@ mod tests {
         assert!(matches!(parse("OFAS NA"), Line::Other));
         assert!(explain("ERROR: [youtube] x: Private video").1);
         assert!(!explain("Unable to download webpage: timed out").1);
+    }
+}
+
+#[cfg(test)]
+mod live {
+    use super::*;
+
+    /// cargo test ytdl_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn ytdl_live() {
+        tauri::async_runtime::block_on(async {
+            let c = reqwest::Client::new();
+            let exe = ytdlp(&c, &|_| {}).await.unwrap();
+            let t = std::time::Instant::now();
+            let i = info(&exe, "https://www.youtube.com/watch?v=b32i4Pxkl28").await.unwrap();
+            println!("info en {:?} : « {} » {} s, hauteurs {:?}, aperçu {}", t.elapsed(), i.title, i.duration, i.heights, &i.preview[..i.preview.len().min(60)]);
+            let ff = ffmpeg(&c, &|_| {}).await.unwrap();
+            let src = std::env::var("SRC").unwrap();
+            let p = probe(&ff, Path::new(&src)).unwrap();
+            let target = 10 * 1_048_576;
+            println!("source {} o, {} s, {}x{} ; plan {:?}", p.size, p.duration, p.width, p.height, plan(&p, target));
+            let dst = std::env::temp_dir().join("ofa-compress.mp4");
+            let t = std::time::Instant::now();
+            let ok = command(&ff.join("ffmpeg.exe")).args(compress_args(Path::new(&src), &dst, &p, target)).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+            println!("compression {:?} en {:?} → {} o", ok, t.elapsed(), std::fs::metadata(&dst).unwrap().len());
+        });
+    }
+}
+
+#[cfg(test)]
+mod proxy_live {
+    use super::*;
+
+    /// cargo test proxy_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn proxy_live() {
+        tauri::async_runtime::block_on(async {
+            let exe = ytdlp(&reqwest::Client::new(), &|_| {}).await.unwrap();
+            let mut i = info(&exe, "https://www.youtube.com/watch?v=b32i4Pxkl28").await.unwrap();
+            expose_preview(&mut i);
+            for range in ["bytes=0-", "bytes=3000000-"] {
+                let req = tauri::http::Request::builder().uri(&i.preview).header("range", range).body(Vec::new()).unwrap();
+                let res = proxy(req).await;
+                println!("{range} → {} {:?} {} octets", res.status(), res.headers().get("content-range"), res.body().len());
+                assert_eq!(res.status(), 206);
+            }
+        });
     }
 }

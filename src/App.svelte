@@ -87,6 +87,16 @@
   let loaded = $state(false);
   let error = $state(null);
   let query = $state("");
+  // Lien collé dans la recherche → onglet DL, prêt à télécharger
+  let dlPrefill = $state(null);
+  function pasteSearch(e) {
+    const text = e.clipboardData?.getData("text")?.trim() ?? "";
+    if (!/^https?:\/\/\S+(\s+https?:\/\/\S+)*$/i.test(text)) return;
+    e.preventDefault();
+    dlPrefill = { text, at: Date.now() };
+    view = "downloads";
+    query = "";
+  }
   let selectedKey = $state(null); // groupe ouvert dans le panneau
   let sel = $state(new Set()); // sélection multiple
   let settingsOpen = $state(false);
@@ -623,7 +633,7 @@
 
     <label class="search">
       <Icon name="search" size={16} />
-      <input bind:this={searchEl} bind:value={query} placeholder="Rechercher…" spellcheck="false" />
+      <input bind:this={searchEl} bind:value={query} onpaste={pasteSearch} placeholder="Rechercher… ou colle un lien à télécharger" spellcheck="false" />
       <kbd>/</kbd>
     </label>
 
@@ -720,7 +730,7 @@
 
   <main bind:this={mainEl} onpointerdown={bandDown} onpointermove={bandMove} onpointerup={bandUp} onpointercancel={bandUp}>
     {#if view === "downloads"}
-      <Downloads {downloads} onrefresh={refreshDownloads} />
+      <Downloads {downloads} onrefresh={refreshDownloads} prefill={dlPrefill} />
     {:else if booting && !torrents.length}
       <!-- Écran de démarrage : qBittorrent se lance en arrière-plan -->
       <div class="boot" in:fade={{ duration: 200 }}>

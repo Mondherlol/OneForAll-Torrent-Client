@@ -539,7 +539,13 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
             }
             DirectView {
                 media: d.media.clone(),
-                media_label: if d.media.is_empty() { String::new() } else { ytdl::label(&d.media).into() },
+                media_label: match d.media.as_str() {
+                    "" => String::new(),
+                    "compress" => "Compressé".into(),
+                    "mp3" => "MP3".into(),
+                    m if !d.res.is_empty() && m != "mp3" => d.res.clone(),
+                    m => ytdl::label(m).into(),
+                },
                 section_label: d.section().map(|(a, b)| format!("{} → {}", ytdl::hms(a), ytdl::hms(b))).unwrap_or_default(),
                 thumb: d.thumb.clone(),
                 note: d.note.clone(),
@@ -620,6 +626,60 @@ fn add_downloads(state: State<'_, AppState>, urls: Vec<String>, format: Option<S
         .collect()
 }
 
+
+/// Titre, durée, aperçu lisible et définitions dispo d'une vidéo (timeline de l'extrait, choix du format)
+#[tauri::command]
+async fn media_info(url: String) -> Result<ytdl::Info, String> {
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let exe = ytdl::ytdlp(&client, &|_| {}).await?;
+    let mut i = ytdl::info(&exe, &url).await?;
+    ytdl::expose_preview(&mut i);
+    Ok(i)
+}
+
+#[derive(Serialize)]
+struct CompressInfo {
+    probe: ytdl::Probe,
+    /// (libellé, taille visée en octets, hauteur de sortie)
+    levels: Vec<(String, i64, i64)>,
+}
+
+/// Niveaux de compression proposés pour une vidéo, avec la taille qu'elle fera
+#[tauri::command]
+async fn compress_info(path: String) -> Result<CompressInfo, String> {
+    let client = reqwest::Client::new();
+    let ff = ytdl::ffmpeg(&client, &|_| {}).await?;
+    let p = tauri::async_runtime::spawn_blocking(move || ytdl::probe(&ff, Path::new(&path))).await.map_err(|e| e.to_string())??;
+    if p.duration <= 0.0 {
+        return Err("Durée de la vidéo inconnue".into());
+    }
+    let mb = 1_048_576i64;
+    let mut levels: Vec<(String, i64)> = vec![
+        ("Léger".into(), p.size * 60 / 100),
+        ("Moyen".into(), p.size * 35 / 100),
+        ("Fort".into(), p.size * 15 / 100),
+    ];
+    // Limites courantes de partage
+    for (label, size) in [("Discord", 10 * mb), ("WhatsApp", 16 * mb), ("Mail", 25 * mb)] {
+        if size < p.size * 9 / 10 {
+            levels.push((label.into(), size * 95 / 100));
+        }
+    }
+    // En dessous de ~100 kbit/s d'image, c'est illisible
+    let floor = ((100_000 + p.audio.min(64_000)) as f64 * p.duration / 8.0) as i64;
+    levels.retain(|(_, s)| *s >= floor);
+    levels.sort_by(|a, b| b.1.cmp(&a.1));
+    let levels = levels.into_iter().map(|(l, s)| {
+        let h = ytdl::plan(&p, s).1;
+        (l, s, h)
+    }).collect();
+    Ok(CompressInfo { probe: p, levels })
+}
+
+#[tauri::command]
+fn compress_video(state: State<'_, AppState>, path: String, target: i64) -> String {
+    state.direct.add_compress(&path, target)
+}
 #[tauri::command]
 async fn download_action(state: State<'_, AppState>, ids: Vec<String>, action: String) -> Result<(), String> {
     state.direct.action(&ids, &action).await
@@ -834,11 +894,22 @@ fn reveal(path: String, fallback: String) -> Result<(), String> {
 /// Ouvre un fichier avec l'application par défaut (ou un dossier).
 #[tauri::command]
 fn open_path(path: String) -> Result<(), String> {
-    if Path::new(&path).exists() {
-        explorer(format!("\"{path}\""))
-    } else {
-        Err("Ce fichier n'existe pas (encore).".into())
+    if !Path::new(&path).exists() {
+        return Err("Ce fichier n'existe pas (encore).".into());
     }
+    // ShellExecute plutôt qu'explorer.exe : fiable avec les caractères spéciaux (« ： », 『』…) des titres
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        let wide = |s: &str| std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+        let (verb, file) = (wide("open"), wide(&path));
+        let r = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1) };
+        if r as isize > 32 {
+            return Ok(());
+        }
+    }
+    explorer(format!("\"{path}\""))
 }
 
 fn find_vlc() -> Option<PathBuf> {
@@ -1288,7 +1359,7 @@ fn launch_qbit(exe: &Path) {
 // ---------- tâche de fond ----------
 
 /// Notification Windows « téléchargement terminé », avec l'affiche du média en vignette.
-fn notify_finished(app: &tauri::AppHandle, m: &Media, poster: Option<&Path>) {
+fn notify_finished(app: &tauri::AppHandle, m: &Media, poster: Option<&Path>, hero: Option<&Path>) {
     use tauri_winrt_notification::{IconCrop, Sound, Toast};
 
     let what = match (m.season, m.episode) {
@@ -1317,7 +1388,28 @@ fn notify_finished(app: &tauri::AppHandle, m: &Media, poster: Option<&Path>) {
     if let Some(p) = poster {
         toast = toast.icon(p, IconCrop::Square, &m.title);
     }
+    if let Some(p) = hero {
+        toast = toast.hero(p, &m.title);
+    }
     let _ = toast.show();
+}
+
+/// Miniature d'une vidéo en PNG local (les notifications Windows ne lisent ni le WebP ni les URL)
+async fn thumb_file(id: &str, url: &str) -> Option<PathBuf> {
+    if url.is_empty() {
+        return None;
+    }
+    let path = config::data_dir().join("thumbs").join(format!("{id}.png"));
+    if path.is_file() {
+        return Some(path);
+    }
+    let bytes = reqwest::Client::new().get(url).timeout(Duration::from_secs(10)).send().await.ok()?.bytes().await.ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    // Bandeau 2:1 comme le veut Windows, sans déformer
+    let img = img.resize_to_fill(728, 364, image::imageops::FilterType::Triangle);
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    img.save_with_format(&path, image::ImageFormat::Png).ok()?;
+    Some(path)
 }
 
 /// Affiche une notification d'exemple avec le dernier torrent terminé.
@@ -1327,7 +1419,7 @@ async fn test_notification(app: tauri::AppHandle, state: State<'_, AppState>) ->
     let t = ts.iter().filter(|t| t.progress >= 1.0).max_by_key(|t| t.completion_on).ok_or("Aucun torrent terminé")?;
     let m = Media::from_raw(t.clone());
     let poster = state.art.poster_file(&m.group_key).await;
-    notify_finished(&app, &m, poster.as_deref());
+    notify_finished(&app, &m, poster.as_deref(), None);
     Ok(())
 }
 
@@ -1354,9 +1446,19 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
         }
         out
     };
-    for m in finished {
+    for mut m in finished {
+        // Vidéo / musique d'un site : sa miniature en grand, son vrai titre (pas d'affiche de film)
+        let media = if direct::is_direct(&m.hash) { st.direct.get(&m.hash).filter(|d| !d.media.is_empty()) } else { None };
+        if let Some(d) = media {
+            m.title = Path::new(&d.name).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(d.name.clone());
+            m.season = None;
+            m.episode = None;
+            let hero = thumb_file(&d.id, &d.thumb).await;
+            notify_finished(app, &m, None, hero.as_deref());
+            continue;
+        }
         let poster = st.art.poster_file(&m.group_key).await;
-        notify_finished(app, &m, poster.as_deref());
+        notify_finished(app, &m, poster.as_deref(), None);
     }
     let Ok(ts) = qts else { return };
     let cfg = st.cfg();
@@ -1643,6 +1745,10 @@ pub fn run() {
         last_progress: Mutex::new(HashMap::new()),
     };
     let app = tauri::Builder::default()
+        // Aperçu vidéo de la timeline « Extrait », relayé avec les en-têtes exigés par YouTube
+        .register_asynchronous_uri_scheme_protocol("ofapv", |_ctx, request, responder| {
+            tauri::async_runtime::spawn(async move { responder.respond(ytdl::proxy(request).await) });
+        })
         // Relancer OneForAll alors qu'il tourne déjà → on rouvre simplement la fenêtre
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             show_main(app);
@@ -1743,6 +1849,9 @@ pub fn run() {
             overlay_data,
             set_watched,
             add_downloads,
+            media_info,
+            compress_info,
+            compress_video,
             download_action,
             move_downloads,
         ])
