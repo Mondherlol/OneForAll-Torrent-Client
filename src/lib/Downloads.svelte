@@ -1,5 +1,6 @@
 <script>
   import { fly } from "svelte/transition";
+  import { untrack } from "svelte";
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import Compress from "./Compress.svelte";
@@ -66,18 +67,22 @@
   let info = $state(null);
   let infoFor = $state(null);
   let infoErr = $state("");
+  // L'effet ne dépend que du lien : avant, il se relançait (il lit et écrit infoFor) et son
+  // nettoyage annulait la lecture prévue → « Lecture de la vidéo… » sans fin.
   $effect(() => {
     const u = single;
-    if (u === infoFor) return;
-    info = null;
-    infoErr = "";
-    infoFor = u;
-    if (!u) return;
-    const t = setTimeout(() => {
-      mediaInfo(u)
-        .then((r) => infoFor === u && (info = r))
-        .catch((e) => infoFor === u && (infoErr = String(e)));
-    }, 300);
+    const t = untrack(() => {
+      if (u === infoFor) return;
+      info = null;
+      infoErr = "";
+      infoFor = u;
+      if (!u) return;
+      return setTimeout(() => {
+        mediaInfo(u)
+          .then((r) => infoFor === u && (info = r))
+          .catch((e) => infoFor === u && (infoErr = String(e)));
+      }, 300);
+    });
     return () => clearTimeout(t);
   });
 
