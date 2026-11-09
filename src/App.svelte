@@ -107,6 +107,7 @@
   let addInit = $state(null); // { query, source, prefer, code } pour une recherche préremplie
   let globalPause = $state(false); // bandeau seulement après « Tout mettre en pause »
   let dragging = $state(false);
+  const THEMES_IDS = THEMES.map((t) => t.id);
   let searchEl, mainEl;
   // Recherche absente de la bibliothèque → proposer de la chercher sur les sites (modale +)
   let searchFocus = $state(false);
@@ -121,10 +122,6 @@
   function searchKey(e) {
     if (e.key !== "Enter" || !webQuery) return;
     if (e.shiftKey || !searched.length) (e.preventDefault(), searchWeb());
-  }
-  function themeMenu(e) {
-    const r = e.currentTarget.getBoundingClientRect();
-    openMenu({ preventDefault() {}, stopPropagation() {}, clientX: r.right - 180, clientY: r.bottom + 6 }, THEMES.map((t) => ({ label: t.label, icon: t.icon, checked: prefs.theme === t.id, run: () => (prefs.theme = t.id) })));
   }
 
   // Torrents ajoutés sans démarrer, en attente du choix des fichiers (un à la fois)
@@ -174,6 +171,7 @@
 
   // ---------- thème & mode compact ----------
   $effect(() => {
+    if (!THEMES_IDS.includes(prefs.theme)) prefs.theme = "light";
     document.documentElement.dataset.theme = prefs.theme;
     win.setTheme(themeOf(prefs.theme).dark ? "dark" : "light").catch(() => {});
   });
@@ -713,8 +711,8 @@
         <Icon name={allPaused ? "playAll" : "pauseAll"} size={17} />
         <span class="tlabel">{allPaused ? "Tout reprendre" : "Tout en pause"}</span>
       </button>
-      <button class="icon-btn" title="Thème : {themeOf(prefs.theme).label}" onclick={themeMenu}>
-        <Icon name={themeOf(prefs.theme).icon} size={16} />
+      <button class="icon-btn" title={themeOf(prefs.theme).dark ? "Thème clair" : "Thème sombre"} onclick={() => (prefs.theme = themeOf(prefs.theme).dark ? "light" : "dark")}>
+        <Icon name={themeOf(prefs.theme).dark ? "sun" : "moon"} size={16} />
       </button>
       <button class="icon-btn" title="Réglages" onclick={() => ((settingsTab = "general"), (settingsOpen = true))}>
         <Icon name="settings" size={16} />

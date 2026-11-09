@@ -246,7 +246,7 @@
           <div class="themes">
             {#each THEMES as t}
               <button class="theme" class:on={prefs.theme === t.id} onclick={() => (prefs.theme = t.id)} title={t.label}>
-                <span class="tsw" style="background:{t.sw[0]}"><i style="background:{t.sw[1]}"></i><i style="background:{t.sw[1]};opacity:.45"></i>{#if t.id === "kawaii"}<em>🎀</em>{/if}</span>
+                <span class="tsw" style="background:{t.sw[0]}"><i style="background:{t.sw[1]}"></i><i style="background:{t.sw[1]};opacity:.45"></i></span>
                 <span class="tname"><Icon name={t.icon} size={12} />{t.label}</span>
               </button>
             {/each}
@@ -518,7 +518,6 @@
   .tsw { position: relative; display: flex; align-items: flex-end; gap: 4px; width: 74px; height: 42px; padding: 6px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); }
   .tsw i { display: block; height: 8px; border-radius: 4px; flex: 1; }
   .tsw i:first-child { flex: 2; }
-  .tsw em { position: absolute; top: 3px; right: 5px; font-style: normal; font-size: 13px; }
   .tname { display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 12px; font-weight: 650; }
   .seg { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--chip); }
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: 550; cursor: pointer; }

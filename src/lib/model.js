@@ -191,8 +191,5 @@ export function fmtPos(ms) {
 export const THEMES = [
   { id: "light", label: "Clair", icon: "sun", dark: false, sw: ["#f3f4f8", "#0067c0"] },
   { id: "dark", label: "Sombre", icon: "moon", dark: true, sw: ["#10131a", "#3b8eea"] },
-  { id: "kawaii", label: "Kawaii", icon: "heart", dark: false, sw: ["#fff0f6", "#ff4d94"] },
-  { id: "minuit", label: "Minuit", icon: "moon", dark: true, sw: ["#120d1f", "#a78bfa"] },
-  { id: "menthe", label: "Menthe", icon: "leaf", dark: false, sw: ["#eef8f3", "#0f9f6e"] },
 ];
 export const themeOf = (id) => THEMES.find((t) => t.id === id) ?? THEMES[0];
