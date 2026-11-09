@@ -4,7 +4,7 @@
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
   import Carousel from "./Carousel.svelte";
-  import { nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
+  import { hostDownload, nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
   import icoNyaa from "../assets/sources/nyaa.png";
@@ -679,14 +679,14 @@
               {#if !preview.nx.length}
                 <p class="hint">Aucun lien trouvé sur la page — ouvre-la sur le site.</p>
               {:else}
-                <p class="nx-note">Les liens passent par <b>ouo.io</b> (vérification à faire dans le navigateur), puis l'hébergeur. Si tu obtiens un lien direct, colle-le dans <b>+ → Lien</b> : il ira dans l'onglet Téléchargements, avec reprise auto.</p>
+                <p class="nx-note">Clique un lien : une fenêtre s'ouvre, fais la vérification <b>ouo.io</b>, OneForAll fait le reste et le fichier arrive dans l'onglet Téléchargements.</p>
                 {#each preview.nx as s}
                   <h4>{s.label}</h4>
                   {#each s.hosts as h}
                     <div class="nx-host">
                       <span class="nx-name">{h.host}</span>
                       <span class="nx-links">
-                        {#each h.links as l}<button class="nx-link" title={l.url} onclick={() => openUrl(l.url)}>{l.label}</button>{/each}
+                        {#each h.links as l}<button class="nx-link" title={l.url} onclick={() => hostDownload(l.url, { title: selected.clean || selected.title, platform: "Switch", thumb: selected.thumb ?? "" }).catch((e) => flash(String(e)))}>{l.label}</button>{/each}
                       </span>
                     </div>
                   {/each}

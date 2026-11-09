@@ -292,6 +292,18 @@
     return () => un?.();
   });
 
+  // Fichier récupéré sur un hébergeur (fenêtre qui fait les clics) : direction l'onglet DL
+  $effect(() => {
+    let un;
+    listen("host-download", () => {
+      addOpen = false;
+      addInit = null;
+      view = "downloads";
+      refreshDownloads();
+    }).then((f) => (un = f));
+    return () => un?.();
+  });
+
   // .torrent ouvert depuis l'Explorateur / lien magnet cliqué
   $effect(() => {
     let un;

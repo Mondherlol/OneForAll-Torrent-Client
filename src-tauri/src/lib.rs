@@ -7,6 +7,7 @@ mod customicon;
 mod diskmap;
 mod direct;
 mod emu;
+mod hoster;
 mod installed;
 mod media;
 mod trends;
@@ -584,6 +585,18 @@ async fn rom_versions(page: String) -> Result<Vec<search::RomVersion>, String> {
     }
     let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
     search::romsfun_versions(&client, &page).await
+}
+
+/// Lien d’hébergeur (1fichier, DataNodes…) : fenêtre qui fait les clics puis envoie le fichier dans l’onglet DL
+#[tauri::command]
+async fn host_download(app: tauri::AppHandle, state: State<'_, AppState>, url: String, title: Option<String>, platform: Option<String>, thumb: Option<String>) -> Result<(), String> {
+    let meta = hoster::Meta { title: title.unwrap_or_default(), platform: platform.unwrap_or_default(), thumb: thumb.unwrap_or_default() };
+    hoster::open(&app, state.direct.clone(), &url, meta)
+}
+
+#[tauri::command]
+fn is_host_link(url: String) -> bool {
+    hoster::is_host(&url)
 }
 
 /// Ajoute une version RomsFun à l'onglet DL (lien direct de la page).
@@ -2336,6 +2349,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             emu_list,
             emu_detect,
+            host_download,
+            is_host_link,
             force_front,
             rom_library,
             rom_scan,

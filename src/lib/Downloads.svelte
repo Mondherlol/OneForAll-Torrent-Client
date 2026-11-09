@@ -8,7 +8,7 @@
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, wantArt } from "./ui.svelte.js";
-  import { dlExtract, dlSetKind, emuDetect } from "./api.js";
+  import { dlExtract, dlSetKind, emuDetect, hostDownload, isHostLink } from "./api.js";
   import ConsoleBadge from "./ConsoleBadge.svelte";
   import { emuById, play } from "./emu.svelte.js";
 
@@ -147,8 +147,16 @@
   // Télécharger : vidéos des sites → fenêtre d'options (qualité, MP3, passage) ; fichiers et Spotify → direct
   let options = $state(null);
   function add() {
-    const urls = links.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
+    let urls = links.split(/\s+/).filter((l) => /^https?:\/\//i.test(l));
     if (!urls.length) return flash("Colle au moins un lien https://…");
+    // Hébergeurs (1fichier, DataNodes…) : la fenêtre qui fait les clics s'en occupe
+    const hosts = urls.filter(isHostLink);
+    if (hosts.length) {
+      for (const u of hosts) hostDownload(u).catch((e) => flash(String(e)));
+      urls = urls.filter((u) => !hosts.includes(u));
+      links = "";
+      if (!urls.length) return;
+    }
     const videos = urls.filter((u) => isMedia(u) && !isSpotify(u));
     if (videos.length) options = { urls: videos, others: urls.filter((u) => !videos.includes(u)) };
     else start(urls, "max", null);
