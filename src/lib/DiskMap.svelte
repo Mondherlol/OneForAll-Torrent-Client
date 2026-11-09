@@ -45,11 +45,19 @@
   // Pendant l'analyse : arbre provisoire rempli au fur et à mesure (dossiers terminés des 3 premiers niveaux)
   const blank = (name) => ({ name, size: 0, files: 0, cats: [0, 0, 0, 0, 0, 0, 0, 0], dir: true, children: [], rest: 0, live: true });
   let live = $state.raw(null);
+  // Arbre en cours de remplissage (non réactif) ; la carte n’est redessinée que 2 fois par seconde
+  // au plus : à chaque dossier fini, ça sautait dans tous les sens
+  let liveRaw = null;
+  let commitTimer = null;
+  const commit = () => {
+    commitTimer = null;
+    if (liveRaw) live = { ...liveRaw };
+  };
   let scanning = $state(false);
   function addPart({ path, node: n }) {
-    if (!live) return;
-    let at = live;
-    const chain = [live];
+    if (!liveRaw) return;
+    let at = liveRaw;
+    const chain = [liveRaw];
     for (const name of path.slice(0, -1)) {
       let c = at.children.find((x) => x.name === name);
       if (!c) at.children.push((c = blank(name)));
@@ -70,7 +78,7 @@
       a.cats = a.cats.map((_, k) => a.children.reduce((s, c) => s + c.cats[k], 0));
       a.children.sort((x, y) => y.size - x.size);
     }
-    live = { ...live };
+    commitTimer ??= setTimeout(commit, 500);
   }
   const mergeKids = (fresh, old) => fresh.map((f) => old.find((o) => o.name === f.name && o.children?.length) ?? f);
 
@@ -78,7 +86,8 @@
     tree = null;
     err = "";
     progress = { files: 0, bytes: 0 };
-    live = blank(base);
+    liveRaw = blank(base);
+    live = liveRaw;
     stack = [];
     scanning = true;
     const un = await listen("disk-scan", (e) => (progress = e.payload));
@@ -95,6 +104,9 @@
       un2();
       clearInterval(tick);
       scanning = false;
+      clearTimeout(commitTimer);
+      commitTimer = null;
+      liveRaw = null;
       live = null;
     }
   }
@@ -190,7 +202,7 @@
     if (!node || !W || !H) return [];
     return squarify(shown(node), 0, 0, W, H).map((b) => {
       const path = pathOf(b.n);
-      const big = b.n.dir && !b.n.isRest && b.w > 130 && b.h > 80 && b.n.children.length;
+      const big = !scanning && b.n.dir && !b.n.isRest && b.w > 130 && b.h > 80 && b.n.children.length;
       return {
         ...b,
         path,
@@ -425,9 +437,7 @@
             class:dir={b.n.dir && !b.n.isRest}
             class:rest={b.n.isRest}
             class:pending={b.n.pending}
-            class:live={b.n.live}
             class:nested={b.kids.length}
-            in:scale={{ start: 0.6, duration: 260 }}
             style="left:{b.x}px;top:{b.y}px;width:{b.w}px;height:{b.h}px;--c:{color(b.n)};--cs:{color(b.n, 0.16)}"
             role="button"
             tabindex="-1"
@@ -518,9 +528,7 @@
   .inner { position: absolute; inset: 0; transform-origin: 0 0; }
   .blk.pending { background: repeating-linear-gradient(135deg, hsl(220 12% 60% / 0.18) 0 10px, hsl(220 12% 60% / 0.08) 10px 20px); background-size: 28px 28px; animation: slide 1.2s linear infinite; color: var(--muted); cursor: default; border-style: dashed; border-color: var(--line-strong); }
   @keyframes slide { to { background-position: 28px 0; } }
-  .blk.live { animation: pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 50% { filter: brightness(1.15) saturate(1.2); } }
-  .map.scanning .blk { transition: left 0.35s ease, top 0.35s ease, width 0.35s ease, height 0.35s ease; cursor: progress; }
+  .map.scanning .blk { transition: left 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), top 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.6s cubic-bezier(0.2, 0.8, 0.2, 1); cursor: progress; }
   .mini-spin { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: spin 0.8s linear infinite; flex: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
