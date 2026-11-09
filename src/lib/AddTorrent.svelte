@@ -3,7 +3,7 @@
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, stageTorrents } from "./api.js";
+  import { nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
   import icoNyaa from "../assets/sources/nyaa.png";
@@ -102,11 +102,12 @@
   const have = $derived(new Set(torrents.map((t) => t.hash.toLowerCase())));
 
   let run = 0;
-  async function search() {
+  /** only : chercher sur ce site seulement (clic sur un jeu populaire d'un site) */
+  async function search(only = null) {
     const q = query.trim();
     if (!q) return;
     const id = ++run;
-    const srcs = targets;
+    const srcs = typeof only === "string" ? [only] : targets;
     remember(q);
     asked = q;
     selected = null;
@@ -294,6 +295,44 @@
     return { destroy: () => io.disconnect() };
   }
 
+  // ---------- accueil : tendances et populaires ----------
+  const CATALOG = { all: "TMDB", film: "TMDB", series: "TMDB", anime: "AniList", book: "AniList", game: "IGDB" };
+  const POP_SITES = ["c411", "nyaa", "fitgirl", "online-fix", "romsfun"];
+  let trends = $state(null); // { genre, list } (list null = chargement)
+  let pops = $state({}); // site → liste | { error } | null (chargement)
+  const popSites = $derived(targets.filter((x) => POP_SITES.includes(x)));
+  $effect(() => {
+    if (results) return;
+    const g = genre;
+    const sites = popSites;
+    untrack(() => {
+      if (CATALOG[g] && trends?.genre !== g) {
+        trends = { genre: g, list: null };
+        trendsCatalog(g)
+          .then((l) => trends?.genre === g && (trends = { genre: g, list: l }))
+          .catch(() => trends?.genre === g && (trends = { genre: g, list: [] }));
+      }
+      for (const x of sites) {
+        const key = `${x}:${g}`;
+        if (key in pops) continue;
+        pops[key] = null;
+        sitePopular(x, g)
+          .then((l) => (pops[key] = l))
+          .catch((e) => (pops[key] = { error: String(e) }));
+      }
+    });
+  });
+  function openTrend(t) {
+    query = t.query;
+    search();
+  }
+  // Un torrent populaire : son aperçu ; un jeu populaire d'un site : on le cherche sur ce site
+  function openPop(r) {
+    if (r.source === "c411" || r.source === "nyaa") return select(r);
+    query = r.clean || r.title;
+    search(r.source);
+  }
+
   // ---------- aperçu ----------
   let selected = $state(null);
   let preview = $state(null);
@@ -397,7 +436,7 @@
           </button>
           <span class="fsep"></span>
           <input bind:this={inputEl} bind:value={query} placeholder={genre === "game" ? "Ex. : Elden Ring" : genre === "anime" ? "Ex. : Frieren 1080p" : "Ex. : Black Clover 1080p"} spellcheck="false" />
-          {#if query}<button type="button" class="clear" title="Effacer" onclick={() => ((query = ""), inputEl?.focus())}><Icon name="close" size={13} /></button>{/if}
+          {#if query}<button type="button" class="clear" title="Effacer" onclick={() => ((query = ""), (results = null), (status = {}), (selected = null), (romOpen = null), inputEl?.focus())}><Icon name="close" size={13} /></button>{/if}
           <button class="go" disabled={!query.trim()}>{#if loading}<span class="spinner light"></span>{:else}<Icon name="search" size={15} />{/if}Rechercher</button>
         </div>
       </form>
@@ -525,22 +564,74 @@
             {/each}
           </ul>
         {:else}
-          <div class="welcome">
-            <span class="w-ic"><Icon name={GENRES.find((g) => g.id === genre).icon} size={30} /></span>
-            <h3>Que veux-tu télécharger ?</h3>
-            <p class="w-where">
-              Recherche sur
-              {#each targets as id, i}<span class="w-src">{@render sico(id)}{SOURCES[id].label}</span>{i < targets.length - 2 ? ", " : i === targets.length - 2 ? " et " : ""}{/each}
-            </p>
+          <div class="home">
             {#if recent.length}
               <div class="recent">
-                <span class="r-head">Récemment <button class="r-clear" onclick={forgetRecent}>Effacer</button></span>
-                <div class="r-list">
-                  {#each recent as q}<button onclick={() => ((query = q), search())}><Icon name="search" size={12} />{q}</button>{/each}
-                </div>
+                <span class="r-head">Récemment</span>
+                {#each recent as q}<button onclick={() => ((query = q), search())}><Icon name="search" size={12} />{q}</button>{/each}
+                <button class="r-clear" onclick={forgetRecent} title="Effacer l'historique"><Icon name="close" size={12} /></button>
               </div>
             {/if}
-            <p class="w-tip">Clique sur un résultat pour voir ses fichiers avant de le télécharger.</p>
+
+            {#if CATALOG[genre]}
+              <section class="strip-sec">
+                <h4><Icon name="calendar" size={14} />Tendances de la semaine <small>{CATALOG[genre]}</small></h4>
+                <div class="strip">
+                  {#if !trends?.list}
+                    {#each Array(8) as _}<span class="tcard sk"></span>{/each}
+                  {:else if !trends.list.length}
+                    <p class="s-empty">Indisponible pour le moment.</p>
+                  {:else}
+                    {#each trends.list as t (t.query + t.poster)}
+                      <button class="tcard" onclick={() => openTrend(t)} title="Chercher « {t.query} »">
+                        <span class="tc-img"><img src={t.poster} alt="" loading="lazy" /></span>
+                        <b>{t.title}</b>
+                        {#if t.sub}<small>{t.sub}</small>{/if}
+                      </button>
+                    {/each}
+                  {/if}
+                </div>
+              </section>
+            {/if}
+
+            {#each popSites as x (x)}
+              {@const p = pops[`${x}:${genre}`]}
+              {#if !(Array.isArray(p) && !p.length)}
+                <section class="strip-sec">
+                  <h4>{@render sico(x)}Populaire sur {SOURCES[x].label}</h4>
+                  <div class="strip">
+                    {#if p == null}
+                      {#each Array(8) as _}<span class="tcard sk"></span>{/each}
+                    {:else if p.error}
+                      <p class="s-empty">{p.error}</p>
+                    {:else}
+                      {#each p as r (r.url || r.page)}
+                        {@const art = arts[r.art_key]}
+                        <button class="tcard" use:lazyArt={r} onclick={() => openPop(r)} title={r.title}>
+                          <span class="tc-img">
+                            {#if r.thumb || art?.url}<img src={r.thumb || art.url} alt="" loading="lazy" />{:else}<Icon name={r.kind} size={26} />{/if}
+                            {#if r.platform}<i class="tc-plat">{r.platform}</i>{/if}
+                          </span>
+                          <b>{r.clean || r.title}</b>
+                          {#if r.seeders >= 0}<small class="seed">↑ {r.seeders} · {fmtSize(r.size)}</small>{:else if r.year}<small>{r.year}</small>{/if}
+                        </button>
+                      {/each}
+                    {/if}
+                  </div>
+                </section>
+              {/if}
+            {/each}
+
+            {#if !CATALOG[genre] && !popSites.length}
+              <div class="welcome">
+                <span class="w-ic"><Icon name={GENRES.find((g) => g.id === genre).icon} size={30} /></span>
+                <h3>Que veux-tu télécharger ?</h3>
+                <p class="w-where">
+                  Recherche sur
+                  {#each targets as id, i}<span class="w-src">{@render sico(id)}{SOURCES[id].label}</span>{i < targets.length - 2 ? ", " : i === targets.length - 2 ? " et " : ""}{/each}
+                </p>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -689,12 +780,30 @@
   .w-where { margin: 0; font-size: 13px; line-height: 1.8; }
   .w-src { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; color: var(--text-2); }
   .w-tip { margin: 14px 0 0; font-size: 12px; }
-  .recent { margin-top: 14px; display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 620px; }
-  .r-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
-  .r-clear { margin-left: 6px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0; cursor: pointer; }
-  .r-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
-  .r-list button { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; }
-  .r-list button:hover { border-color: var(--accent); color: var(--accent); }
+  .home { display: flex; flex-direction: column; gap: 18px; padding: 10px 4px 16px; }
+  .recent { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .r-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-right: 4px; }
+  .recent button:not(.r-clear) { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; }
+  .recent button:not(.r-clear):hover { border-color: var(--accent); color: var(--accent); }
+  .r-clear { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; border: 0; background: none; color: var(--muted); cursor: pointer; }
+  .r-clear:hover { background: var(--chip); color: var(--text); }
+  .strip-sec h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 14px; color: var(--text); }
+  .strip-sec h4 small { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .strip { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 8px; scroll-snap-type: x proximity; }
+  .strip::-webkit-scrollbar { height: 6px; }
+  .strip::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 6px; }
+  .tcard { flex: none; width: 118px; display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
+  .tc-img { position: relative; display: grid; place-items: center; width: 118px; aspect-ratio: 2 / 3; border-radius: 10px; overflow: hidden; background: var(--chip); color: var(--muted); margin-bottom: 4px; box-shadow: 0 3px 10px rgb(0 0 0 / 0.12); transition: transform 0.15s, box-shadow 0.15s; }
+  .tc-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .tcard:hover .tc-img { transform: translateY(-3px); box-shadow: 0 10px 22px rgb(0 0 0 / 0.22), 0 0 0 2px var(--accent); }
+  .tcard b { font-size: 12.5px; font-weight: 650; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
+  .tcard:hover b { color: var(--accent); }
+  .tcard small { font-size: 11px; color: var(--muted); }
+  .tcard small.seed { color: #16a34a; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tc-plat { position: absolute; left: 6px; bottom: 6px; padding: 1px 6px; border-radius: 5px; font-style: normal; font-size: 10px; font-weight: 700; background: rgb(0 0 0 / 0.65); color: white; }
+  .tcard.sk { height: 177px; border-radius: 10px; background: linear-gradient(100deg, var(--chip) 30%, var(--line) 50%, var(--chip) 70%); background-size: 300% 100%; animation: tshimmer 1.2s linear infinite; }
+  @keyframes tshimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  .s-empty { margin: 0; font-size: 12.5px; color: var(--muted); }
   .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 8vh 20px; color: var(--muted); text-align: center; }
   .empty b { color: var(--text); font-size: 14px; }
 
@@ -743,7 +852,6 @@
   .kb.k-book { background: rgb(161 98 7 / 0.12); color: #a16207; }
   .kb.k-audio { background: rgb(147 51 234 / 0.12); color: #9333ea; }
   .lb.plat { border-color: rgb(22 163 74 / 0.35); color: #16a34a; }
-  .pv-files li.ver { align-items: center; }
   .lb { font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--text-2); }
   .seed { color: var(--ok); }
   .seed.dead { color: var(--err); }

@@ -562,7 +562,7 @@ impl Artwork {
     }
 
     /// Requête IGDB (jeton renouvelé une fois s'il est refusé). Une erreur → None.
-    async fn igdb_query(&self, endpoint: &str, body: &str) -> Option<Vec<Value>> {
+    pub async fn igdb_query(&self, endpoint: &str, body: &str) -> Option<Vec<Value>> {
         if !igdb_enabled() {
             return None;
         }

@@ -8,6 +8,7 @@ mod direct;
 mod emu;
 mod installed;
 mod media;
+mod trends;
 mod player;
 mod qbit;
 mod qsetup;
@@ -540,6 +541,36 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
         "romsfun" => search::romsfun(&client, query.trim()).await,
         "wowroms" => search::wowroms(&client, query.trim()).await,
         _ => search::nyaa(&client, query.trim()).await,
+    }
+}
+
+/// Tendances du moment pour un genre (TMDB, AniList, IGDB) : écran d'accueil de la recherche.
+#[tauri::command]
+async fn trends_catalog(state: State<'_, AppState>, kind: String) -> Result<Vec<trends::Trend>, String> {
+    let mut tmdb = state.cfg().tmdb_key;
+    if tmdb.is_empty() {
+        tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
+    }
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.7").timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    Ok(trends::cached(&format!("cat:{kind}"), trends::catalog(&client, &state.art, &kind, &tmdb)).await)
+}
+
+/// Ce qui est populaire en ce moment sur un site (C411, Nyaa, FitGirl, Online-Fix, RomsFun).
+#[tauri::command]
+async fn site_popular(state: State<'_, AppState>, source: String, genre: String) -> Result<Vec<search::SearchResult>, String> {
+    let key = state.cfg().c411_key;
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.7").timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    let mut err = None;
+    let list = trends::cached(&format!("site:{source}:{genre}"), async {
+        search::popular(&client, &source, &genre, &key).await.unwrap_or_else(|e| {
+            err = Some(e);
+            Vec::new()
+        })
+    })
+    .await;
+    match err {
+        Some(e) if list.is_empty() => Err(e),
+        _ => Ok(list),
     }
 }
 
@@ -2208,6 +2239,8 @@ pub fn run() {
             emu_take_pending,
             rom_versions,
             rom_download,
+            trends_catalog,
+            site_popular,
             dl_extract,
             dl_set_kind,
             get_torrents,

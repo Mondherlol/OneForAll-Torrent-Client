@@ -76,3 +76,5 @@ export const romVersions = (page) => invoke("rom_versions", { page });
 export const romDownload = (page, meta = {}) => invoke("rom_download", { page, title: meta.title ?? "", platform: meta.platform ?? "", thumb: meta.thumb ?? "" });
 export const dlExtract = (id) => invoke("dl_extract", { id });
 export const dlSetKind = (id, kind) => invoke("dl_set_kind", { id, kind });
+export const trendsCatalog = (kind) => invoke("trends_catalog", { kind });
+export const sitePopular = (source, genre) => invoke("site_popular", { source, genre });

@@ -807,3 +807,205 @@ mod rom_live {
         });
     }
 }
+
+// ---------- populaires de chaque site (écran d'accueil de la recherche) ----------
+
+/// Ce qui est populaire en ce moment sur un site. `genre` : genre choisi dans la recherche.
+/// C411 et Nyaa : de vrais torrents ; les autres : des jeux (titre, jaquette, page) à chercher au clic.
+pub async fn popular(client: &Client, source: &str, genre: &str, c411_key: &str) -> Result<Vec<SearchResult>, String> {
+    match source {
+        "c411" => c411_popular(client, genre, c411_key).await,
+        "nyaa" => nyaa_popular(client, genre).await,
+        "fitgirl" => fitgirl_popular(client).await,
+        "online-fix" => online_fix_popular(client).await,
+        "romsfun" => romsfun_popular(client).await,
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// C411 : les sorties récentes (≈ 300 dernières du genre) les plus partagées
+async fn c411_popular(client: &Client, genre: &str, key: &str) -> Result<Vec<SearchResult>, String> {
+    if key.trim().is_empty() {
+        return Err("Ajoute ta clé API C411 dans Réglages → Général → Intégrations.".into());
+    }
+    let cat = match genre {
+        "film" => "2000",
+        "series" | "anime" => "5000",
+        "audio" => "3000",
+        "software" | "game" => "4000",
+        "book" => "7000",
+        _ => "",
+    };
+    let page = |offset: u32| {
+        let mut p: Vec<(&str, String)> = vec![("t", "search".into()), ("q", String::new()), ("offset", offset.to_string())];
+        if !cat.is_empty() {
+            p.push(("cat", cat.into()));
+        }
+        torznab_once(client, "https://c411.org", key, p, "c411")
+    };
+    let (a, b, c) = tokio::join!(page(0), page(100), page(200));
+    let mut all: Vec<SearchResult> = Vec::new();
+    let mut err = None;
+    for r in [a, b, c] {
+        match r {
+            Ok(list) => all.extend(list),
+            Err(e) => err = Some(e),
+        }
+    }
+    if all.is_empty() {
+        return Err(err.unwrap_or_default());
+    }
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|r| seen.insert(r.url.clone()) && (genre == "all" || genre == r.kind || (genre == "series" && r.kind == "anime") || !matches!(genre, "film" | "series" | "anime")));
+    all.sort_by(|a, b| b.seeders.cmp(&a.seeders));
+    all.truncate(24);
+    Ok(all)
+}
+
+static RE_NY_ROW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<a href="/view/(\d+)" title="([^"]+)">.*?href="(magnet:[^"]+)".*?<td class="text-center">([^<]+)</td>\s*<td class="text-center" data-timestamp="(\d+)">.*?<td class="text-center">(\d+)</td>\s*<td class="text-center">(\d+)</td>\s*<td class="text-center">(\d+)</td>"#).unwrap());
+
+/// Nyaa : les torrents les plus partagés de la catégorie
+async fn nyaa_popular(client: &Client, genre: &str) -> Result<Vec<SearchResult>, String> {
+    let cat = match genre {
+        "book" => "3_0",
+        "audio" => "2_0",
+        _ => "1_0",
+    };
+    let html = client
+        .get("https://nyaa.si/")
+        .query(&[("c", cat), ("s", "seeders"), ("o", "desc")])
+        .send()
+        .await
+        .map_err(|e| format!("nyaa.si injoignable : {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(nyaa_parse_html(&html))
+}
+
+pub fn nyaa_parse_html(html: &str) -> Vec<SearchResult> {
+    html.split("<tr class=\"")
+        .skip(1)
+        .filter_map(|row| {
+            let c = RE_NY_ROW.captures(row)?;
+            let magnet = decode(&c[3]);
+            let mut r = blank("nyaa");
+            r.title = decode(&c[2]);
+            r.url = format!("https://nyaa.si/download/{}.torrent", &c[1]);
+            r.page = format!("https://nyaa.si/view/{}", &c[1]);
+            r.hash = RE_BTIH.captures(&magnet).map(|h| h[1].to_lowercase()).unwrap_or_default();
+            r.size = parse_size(c[4].trim());
+            r.date = c[5].parse::<i64>().ok().and_then(|t| chrono_rfc2822(t)).unwrap_or_default();
+            r.seeders = c[6].parse().unwrap_or(0);
+            r.leechers = c[7].parse().unwrap_or(0);
+            r.downloads = c[8].parse().unwrap_or(0);
+            r.category = String::new();
+            Some(enrich(r))
+        })
+        .take(24)
+        .collect()
+}
+
+/// Date RFC 2822 (comme les flux RSS) d'un horodatage Unix
+fn chrono_rfc2822(t: i64) -> Option<String> {
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let days = t.div_euclid(86400);
+    let secs = t.rem_euclid(86400);
+    // Jour civil (algorithme de Howard Hinnant)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    Some(format!(
+        "{}, {:02} {} {} {:02}:{:02}:{:02} +0000",
+        DAYS[days.rem_euclid(7) as usize],
+        d,
+        MONTHS[(m - 1) as usize],
+        y,
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60
+    ))
+}
+
+static RE_FG_POP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"widget-grid-view-image"><a href="([^"]+)" title="([^"]+)"[^>]*><img[^>]*?src="([^"]+)""#).unwrap());
+
+static RE_ADULT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)18\+|\bsex|hentai|nsfw|milf|\bporn|erotic").unwrap());
+
+/// FitGirl : page « Popular repacks » du site (sans les jeux pour adultes)
+async fn fitgirl_popular(client: &Client) -> Result<Vec<SearchResult>, String> {
+    let html = get_html(client, "https://fitgirl-repacks.site/popular-repacks/").await?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(RE_FG_POP
+        .captures_iter(&html)
+        .filter(|c| seen.insert(c[1].to_string()) && !RE_ADULT.is_match(&c[2]))
+        .map(|c| {
+            let title = decode(&c[2]);
+            let name = title.split([',', '–', '(']).next().unwrap_or(&title).split(" - ").next().unwrap_or(&title).trim().to_string();
+            let mut r = blank("fitgirl");
+            r.page = c[1].to_string();
+            r.thumb = decode(&c[3].replace("&#038;", "&"));
+            r.clean = name.clone();
+            r.title = title;
+            let r = enrich_game(r, &name);
+            SearchResult { clean: name, ..r }
+        })
+        .take(24)
+        .collect())
+}
+
+static RE_OF_POP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)<a href="(/games/[^"]+)" title="([^"]+)">\s*(?:<!--.*?-->\s*)?<img src="([^"]+)""#).unwrap());
+
+/// Online-Fix : bandeau « Популярное » (populaire) de la page d'accueil
+async fn online_fix_popular(client: &Client) -> Result<Vec<SearchResult>, String> {
+    let res = client.get("https://online-fix.me/").send().await.map_err(|e| format!("online-fix.me injoignable : {e}"))?;
+    let html = cp1251(&res.bytes().await.map_err(|e| e.to_string())?);
+    let start = html.find("Популярное").ok_or("Pas de jeux populaires sur online-fix.me")?;
+    let block = &html[start..];
+    let block = &block[..block.find("<div class=\"news").unwrap_or(block.len())];
+    Ok(RE_OF_POP
+        .captures_iter(block)
+        .map(|c| {
+            let name = RE_OF_SUFFIX.replace(decode(&c[2]).trim(), "").trim().to_string();
+            let mut r = blank("online-fix");
+            r.page = format!("https://online-fix.me{}", &c[1]);
+            r.thumb = c[3].to_string();
+            r.title = name.clone();
+            let r = enrich_game(r, &name);
+            SearchResult { clean: name, ..r }
+        })
+        .take(24)
+        .collect())
+}
+
+/// RomsFun : section « Popular ROM » de la page d'accueil
+async fn romsfun_popular(client: &Client) -> Result<Vec<SearchResult>, String> {
+    let html = get_html(client, "https://romsfun.com/").await?;
+    let start = html.find("Popular ROM").ok_or("Pas de section populaire sur RomsFun")?;
+    let block = &html[start..];
+    let block = &block[..block.find("Fresh upload").unwrap_or(block.len())];
+    Ok(romsfun_parse(block))
+}
+
+#[cfg(test)]
+mod popular_live {
+    /// `cargo test popular_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn sites() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let c = reqwest::Client::builder().user_agent("OneForAll/0.7").build().unwrap();
+        for s in ["nyaa", "fitgirl", "online-fix", "romsfun"] {
+            match rt.block_on(super::popular(&c, s, "all", "")) {
+                Ok(l) => println!("{s}: {} → {:?}", l.len(), l.iter().take(3).map(|r| format!("{} | {} | {} | {}", r.clean, r.seeders, r.thumb.chars().take(40).collect::<String>(), r.url.chars().take(40).collect::<String>())).collect::<Vec<_>>()),
+                Err(e) => println!("{s}: ERR {e}"),
+            }
+        }
+    }
+}
