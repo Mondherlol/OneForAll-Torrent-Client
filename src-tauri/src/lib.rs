@@ -783,6 +783,22 @@ async fn disk_analyze(app: tauri::AppHandle, mount: String) -> Result<diskmap::N
     Ok(n)
 }
 
+/// Vide la corbeille d’un disque (« C:\ »), sans fenêtre de confirmation Windows (l’app a déjà demandé)
+#[tauri::command]
+fn empty_recycle_bin(mount: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::Shell::{SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND};
+        let root: Vec<u16> = mount.encode_utf16().chain(std::iter::once(0)).collect();
+        let hr = unsafe { SHEmptyRecycleBinW(std::ptr::null_mut(), root.as_ptr(), SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND) };
+        // S_OK, ou E_UNEXPECTED quand elle est déjà vide
+        if hr != 0 && hr != 0x8000FFFFu32 as i32 {
+            return Err(format!("Impossible de vider la corbeille (code {hr:#x})"));
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn disk_analyze_cancel() {
     diskmap::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2368,6 +2384,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             emu_list,
             emu_detect,
+            empty_recycle_bin,
             apps_list,
             app_install,
             read_book,

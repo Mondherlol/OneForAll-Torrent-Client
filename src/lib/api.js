@@ -101,3 +101,4 @@ export const trashPath = (path) => invoke("trash_path", { path });
 export const hostDownload = (url, meta = {}) => invoke("host_download", { url, title: meta.title ?? null, platform: meta.platform ?? null, thumb: meta.thumb ?? null });
 /** Lien d'hébergeur (1fichier, DataNodes, ouo.io…) : passe par la fenêtre qui fait les clics */
 export const isHostLink = (u) => /^https?:\/\/[^/]*(1fichier\.com|datanodes\.to|ouo\.(io|press)|multiup\.|filekeeper|gofile\.io|buzzheavier|mediafire\.com|pixeldrain)/i.test(u);
+export const emptyRecycleBin = (mount) => invoke("empty_recycle_bin", { mount });

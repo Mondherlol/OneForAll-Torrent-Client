@@ -5,7 +5,7 @@
   import { tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import Icon from "./Icon.svelte";
-  import { diskAnalyze, diskAnalyzeCancel, openPath, reveal, trashPath } from "./api.js";
+  import { diskAnalyze, diskAnalyzeCancel, emptyRecycleBin, openPath, reveal, trashPath } from "./api.js";
   import { KIND_LABEL, fmtSize } from "./model.js";
   import { confirmAsk, flash, openMenu } from "./ui.svelte.js";
 
@@ -252,6 +252,7 @@
     const all = [];
     const walk = (n, path, chain) => {
       for (const c of n.children) {
+        if (c.name.toLowerCase() === "$recycle.bin") continue; // la corbeille a son propre bandeau
         const p = `${path}\\${c.name}`;
         const info = describe(c, p);
         const dirKids = c.children.filter((k) => k.dir).reduce((s, k) => s + k.size, 0);
@@ -272,6 +273,29 @@
     }
     return picked;
   });
+  // Corbeille : à part, avec un bouton pour la vider
+  const bin = $derived((version, tree?.children.find((c) => c.name.toLowerCase() === "$recycle.bin" && c.size > 50 << 20)));
+  let emptying = $state(false);
+  async function emptyBin() {
+    const n = bin;
+    if (!(await confirmAsk("Vider la corbeille ?", `${fmtSize(n.size)} de fichiers supprimés seront effacés définitivement de ${base}.`, "Vider la corbeille", true))) return;
+    emptying = true;
+    try {
+      await emptyRecycleBin(mount);
+      tree.children = tree.children.filter((c) => c !== n);
+      tree.size -= n.size;
+      tree.files -= n.files;
+      for (let i = 0; i < 8; i++) tree.cats[i] = Math.max(0, tree.cats[i] - n.cats[i]);
+      if (stack.includes(n)) stack = [tree];
+      version++;
+      flash(`Corbeille vidée · ${fmtSize(n.size)} libérés`);
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      emptying = false;
+    }
+  }
+
   // Depuis la liste : on ouvre les blocs sur le dossier qui contient l'élément
   async function goTo(h) {
     view = "blocks";
@@ -353,6 +377,13 @@
     {#if scanning && used}<div class="hbar"><span style="width:{pct}%"></span></div>{/if}
   </header>
 
+  {#if bin && !err}
+    <div class="bin" transition:slide={{ duration: 160 }}>
+      <span class="bico"><Icon name="trash" size={18} /></span>
+      <div class="bt"><b>Corbeille · {fmtSize(bin.size)}</b><small>Fichiers supprimés qui prennent encore de la place sur {base}</small></div>
+      <button class="btn danger-fill" disabled={emptying} onclick={emptyBin}><Icon name="trash" size={14} />{emptying ? "Vidage…" : "Vider la corbeille"}</button>
+    </div>
+  {/if}
   {#if err}
     <div class="state"><Icon name="alert" size={30} /><p>{err}</p></div>
   {:else if view === "list" && tree}
@@ -469,6 +500,11 @@
   .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
   .state p { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
 
+  .bin { display: flex; align-items: center; gap: 12px; margin: 10px 14px 0; padding: 10px 12px 10px 10px; border-radius: 14px; background: color-mix(in srgb, var(--err) 8%, var(--surface)); border: 1px solid color-mix(in srgb, var(--err) 25%, transparent); }
+  .bico { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 11px; background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); flex: none; }
+  .bt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .bt b { font-size: 14px; }
+  .bt small { font-size: 12px; color: var(--muted); }
   .mapbar { display: flex; padding: 10px 10px 0; }
   .back { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px 0 10px; border-radius: 10px; border: 0; font: inherit; font-size: 13px; font-weight: 650; background: var(--accent); color: white; cursor: pointer; flex: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent); transition: transform 0.12s; }
   .back :global(svg) { transform: rotate(180deg); }
