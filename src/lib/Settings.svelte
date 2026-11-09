@@ -221,21 +221,28 @@
     {/each}
 
     <!-- Version et mises à jour : une ligne, vérification automatique à l'ouverture -->
-    <div class="about">
-      <span class="ver" title={upd.error ?? ""}>
-        v{upd.current}
-        {#if upd.checking}<i class="st">…</i>{:else if upd.available}<i class="st new">nouvelle version</i>{:else if upd.error}<i class="st bad">hors ligne</i>{:else if upd.checkedOnce}<i class="st ok">à jour</i>{/if}
-      </span>
-      {#if upd.available}
-        <button class="upd hot" disabled={upd.progress != null} onclick={installUpdate} title="Installer la v{upd.available.version}">
-          <Icon name="down" size={13} />{upd.progress != null ? `${Math.round((upd.progress ?? 0) * 100)} %` : `v${upd.available.version}`}
-        </button>
-      {:else}
+    {#if upd.available}
+      <!-- Mise à jour dispo : une carte cliquable, la progression s'affiche dedans -->
+      <button class="updcard" disabled={upd.progress != null} onclick={installUpdate} title="Installer la v{upd.available.version} (l'app redémarre)">
+        <span class="uc-ico"><Icon name="down" size={15} /></span>
+        <span class="uc-txt">
+          <b>{upd.progress != null ? "Installation…" : "Mise à jour dispo"}</b>
+          <small>v{upd.current} → v{upd.available.version}</small>
+        </span>
+        {#if upd.progress != null}<span class="uc-pct">{Math.round((upd.progress ?? 0) * 100)} %</span>{/if}
+        {#if upd.progress != null}<span class="uc-bar" style="width: {Math.round((upd.progress ?? 0) * 100)}%"></span>{/if}
+      </button>
+    {:else}
+      <div class="about">
+        <span class="ver" title={upd.error ?? ""}>
+          v{upd.current}
+          {#if upd.checking}<i class="st">…</i>{:else if upd.error}<i class="st bad">hors ligne</i>{:else if upd.checkedOnce}<i class="st ok">à jour</i>{/if}
+        </span>
         <button class="upd ico" class:spinning={upd.checking} disabled={upd.checking} title="Rechercher une mise à jour" onclick={() => checkUpdates().then((a) => !a && !upd.error && flash("OneForAll est à jour"))}>
           <Icon name="refresh" size={13} />
         </button>
-      {/if}
-    </div>
+      </div>
+    {/if}
   </nav>
 
   <section>
@@ -512,12 +519,19 @@
   .ver { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .st { font-style: normal; font-size: 10.5px; font-weight: 650; padding: 1px 6px; border-radius: 999px; background: var(--chip); color: var(--muted); }
   .st.ok { background: rgb(16 185 129 / 0.12); color: var(--ok); }
-  .st.new { background: var(--accent-soft); color: var(--accent); }
   .st.bad { background: var(--err-soft); color: var(--err); }
   nav .upd { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface); font-size: 11.5px; font-weight: 700; color: var(--text-2); }
   nav .upd.ico { width: 26px; padding: 0; justify-content: center; }
   nav .upd:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  nav .upd.hot { background: var(--accent); border-color: var(--accent); color: white; }
+  nav .updcard { position: relative; overflow: hidden; margin-top: auto; display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 10px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); background: var(--accent-soft); color: var(--text); text-align: left; transition: border-color 0.15s, transform 0.15s; }
+  nav .updcard:hover { background: var(--accent-soft); color: var(--text); }
+  nav .updcard:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+  .uc-ico { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: white; }
+  .uc-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+  .uc-txt b { font-size: 12px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+  .uc-txt small { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .uc-pct { font-size: 11px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .uc-bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width 0.2s; }
   .upd.spinning :global(svg) { animation: spin 0.8s linear infinite; }
 
   /* sections en cartes */
