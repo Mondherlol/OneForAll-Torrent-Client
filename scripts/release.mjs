@@ -21,6 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { refreshIgdbToken } from "./igdb-token.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = "Mondherlol/OneForAll-Torrent-Client";
@@ -50,7 +51,8 @@ const keyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || path.join(os.homed
 if (!fs.existsSync(keyPath)) fail(`Clé de signature introuvable : ${keyPath}\n  Crée-la avec : npx tauri signer generate -w "${keyPath}"`);
 if (!process.env.ONEFORALL_TMDB_KEY) console.warn("⚠ ONEFORALL_TMDB_KEY absent de .env.local : l'app sera publiée sans clé TMDB intégrée.");
 
-if (!process.env.ONEFORALL_IGDB_CLIENT_ID) console.warn("⚠ ONEFORALL_IGDB_CLIENT_ID absent de .env.local : pas de jaquettes IGDB pour les jeux.");
+// Jeton IGDB renouvelé s'il expire bientôt (intégré à l'app ; l'app sait aussi le renouveler seule)
+await refreshIgdbToken({ auto: true }).catch((e) => console.warn(`⚠ Jeton IGDB : ${e.message}`));
 
 // ---------- version ----------
 const pkgPath = path.join(ROOT, "package.json");

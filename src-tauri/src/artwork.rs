@@ -252,17 +252,23 @@ impl Artwork {
         })
     }
 
-    /// Jeton d'accès IGDB : demandé à Twitch avec le secret (valable ~60 jours), gardé en mémoire.
+    /// Jeton d'accès IGDB : celui intégré à la compilation, sinon demandé à Twitch avec le secret (~60 jours).
     async fn igdb_auth(&self, renew: bool) -> Option<String> {
         if let Some((t, until)) = self.igdb_token.lock().unwrap().clone() {
             if !renew && until > std::time::Instant::now() {
                 return Some(t);
             }
         }
+        // Le jeton intégré d'abord ; s'il est refusé (expiré), on en demande un nouveau avec le secret
+        let built_in = IGDB_TOKEN.filter(|s| !s.is_empty());
+        if !renew {
+            if let Some(t) = built_in {
+                *self.igdb_token.lock().unwrap() = Some((t.to_string(), std::time::Instant::now() + Duration::from_secs(365 * 86400)));
+                return Some(t.to_string());
+            }
+        }
         let id = IGDB_ID.filter(|s| !s.is_empty())?;
-        let Some(secret) = IGDB_SECRET.filter(|s| !s.is_empty()) else {
-            return IGDB_TOKEN.filter(|s| !s.is_empty()).map(str::to_string);
-        };
+        let secret = IGDB_SECRET.filter(|s| !s.is_empty())?;
         let v: Value = self
             .client
             .post("https://id.twitch.tv/oauth2/token")
