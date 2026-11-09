@@ -38,13 +38,15 @@ pub struct Node {
 
 pub static CANCEL: AtomicBool = AtomicBool::new(false);
 
-struct Ctx {
+struct Ctx<'a> {
     min: u64,
+    /// Dossier terminé (chemin depuis la racine, aperçu sur un niveau) : l'écran se remplit au fur et à mesure
+    part: &'a (dyn Fn(Vec<String>, Node) + Sync),
     files: AtomicU64,
     bytes: AtomicU64,
 }
 
-fn scan_dir(path: &Path, name: String, ctx: &Ctx) -> Node {
+fn scan_dir(path: &Path, name: String, ctx: &Ctx, trail: &[String]) -> Node {
     let mut node = Node { name, dir: true, ..Default::default() };
     if CANCEL.load(Ordering::Relaxed) {
         return node;
@@ -79,7 +81,12 @@ fn scan_dir(path: &Path, name: String, ctx: &Ctx) -> Node {
     }
     let kids: Vec<Node> = subdirs
         .par_iter()
-        .map(|p| scan_dir(p, p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), ctx))
+        .map(|p| {
+            let n = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let mut t = trail.to_vec();
+            t.push(n.clone());
+            scan_dir(p, n, ctx, &t)
+        })
         .collect();
     for k in &kids {
         node.size += k.size;
@@ -93,15 +100,23 @@ fn scan_dir(path: &Path, name: String, ctx: &Ctx) -> Node {
     children.truncate(60);
     node.rest = node.size - children.iter().map(|c| c.size).sum::<u64>();
     node.children = children;
+    // Les 3 premiers niveaux sont envoyés dès qu'ils sont finis (sans leurs sous-dossiers : juste pour l'aperçu)
+    if (1..=3).contains(&trail.len()) && node.size >= ctx.min && !CANCEL.load(Ordering::Relaxed) {
+        let mut shallow = node.clone();
+        for c in &mut shallow.children {
+            c.children = Vec::new();
+        }
+        (ctx.part)(trail.to_vec(), shallow);
+    }
     node
 }
 
 /// Analyse `root` (ex. « D:\ »). `used` : place occupée sur le disque (fixe le seuil de détail).
 /// `progress(fichiers, octets)` est appelé régulièrement.
-pub fn analyze(root: &str, used: u64, progress: impl Fn(u64, u64) + Sync) -> Node {
+pub fn analyze(root: &str, used: u64, progress: impl Fn(u64, u64) + Sync, part: impl Fn(Vec<String>, Node) + Sync) -> Node {
     CANCEL.store(false, Ordering::Relaxed);
     // Assez de détail pour zoomer, sans envoyer des centaines de milliers d'éléments
-    let ctx = Ctx { min: (used / 25_000).max(4 << 20), files: AtomicU64::new(0), bytes: AtomicU64::new(0) };
+    let ctx = Ctx { part: &part, min: (used / 25_000).max(4 << 20), files: AtomicU64::new(0), bytes: AtomicU64::new(0) };
     let done = AtomicBool::new(false);
     std::thread::scope(|s| {
         s.spawn(|| {
@@ -110,7 +125,7 @@ pub fn analyze(root: &str, used: u64, progress: impl Fn(u64, u64) + Sync) -> Nod
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
         });
-        let n = scan_dir(Path::new(root), root.trim_end_matches('\\').to_string(), &ctx);
+        let n = scan_dir(Path::new(root), root.trim_end_matches('\\').to_string(), &ctx, &[]);
         done.store(true, Ordering::Relaxed);
         n
     })
@@ -124,7 +139,11 @@ mod tests {
     fn disk_map_live() {
         let t = std::time::Instant::now();
         let root = std::env::var("DISK").unwrap_or("D:\\".into());
-        let n = super::analyze(&root, 500 << 30, |_, _| {});
+        let parts = std::sync::atomic::AtomicUsize::new(0);
+        let n = super::analyze(&root, 500 << 30, |_, _| {}, |_, _| {
+            parts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        println!("{} aperçus envoyés", parts.into_inner());
         let json = serde_json::to_string(&n).unwrap();
         println!("{} fichiers, {} Go en {:?}, JSON {} Ko", n.files, n.size >> 30, t.elapsed(), json.len() / 1024);
         for c in n.children.iter().take(12) {

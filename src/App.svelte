@@ -1076,7 +1076,7 @@
 
 {#if sel.size}
   <div class="selbar" transition:fly={{ y: 20, duration: 160 }}>
-    <span class="count"><Icon name="select" size={15} />{sel.size} sélectionné{sel.size > 1 ? "s" : ""}</span>
+    <span class="count"><b>{sel.size}</b>sélectionné{sel.size > 1 ? "s" : ""}</span>
     {#if selItems.length}
     <button onclick={() => onaction("pause", selItems)}><Icon name="pause" size={14} />Pause</button>
     <button onclick={() => onaction("resume", selItems)}><Icon name="play" size={14} />Reprendre</button>
@@ -1313,18 +1313,20 @@
     z-index: 35;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px;
-    border-radius: 14px;
-    background: var(--text);
-    color: var(--on-text);
-    box-shadow: var(--shadow-lg);
+    gap: 2px;
+    padding: 6px 6px 6px 8px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 82%, white), var(--accent) 45%, color-mix(in srgb, var(--accent) 80%, black));
+    color: white;
+    box-shadow: 0 14px 34px -8px color-mix(in srgb, var(--accent) 60%, transparent), 0 2px 6px rgb(0 0 0 / 0.15), inset 0 1px 0 rgb(255 255 255 / 0.25);
   }
-  .selbar .count { display: inline-flex; align-items: center; gap: 7px; padding: 0 12px 0 8px; font-weight: 700; font-size: 13px; white-space: nowrap; }
-  .selbar button { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border: 0; border-radius: 9px; background: none; color: inherit; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-  .selbar button:hover { background: rgb(127 127 127 / 0.25); }
-  .selbar button.danger { color: #fb7185; }
-  .selbar .x { width: 32px; padding: 0; justify-content: center; }
+  .selbar .count { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px 0 2px; margin-right: 4px; border-right: 1px solid rgb(255 255 255 / 0.25); font-weight: 700; font-size: 13px; white-space: nowrap; }
+  .selbar .count b { display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 13px; background: white; color: var(--accent); font-size: 13px; font-weight: 800; }
+  .selbar button { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 0; border-radius: 11px; background: none; color: white; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.12s; }
+  .selbar button:hover { background: rgb(255 255 255 / 0.18); }
+  .selbar button.danger { background: rgb(255 255 255 / 0.12); margin-left: 2px; }
+  .selbar button.danger:hover { background: #e11d48; }
+  .selbar .x { width: 34px; padding: 0; justify-content: center; margin-left: 4px; background: rgb(0 0 0 / 0.15); border-radius: 50%; }
 
   .empty { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 12vh; color: var(--muted); text-align: center; }
   .connect p { line-height: 1.55; max-width: 520px; }

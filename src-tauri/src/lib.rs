@@ -725,9 +725,17 @@ async fn rom_scan(app: tauri::AppHandle) -> Result<Vec<romscan::LocalRom>, Strin
 async fn disk_analyze(app: tauri::AppHandle, mount: String) -> Result<diskmap::Node, String> {
     let used = scan::disks().into_iter().find(|d| d.mount == mount).map(|d| d.total - d.free).unwrap_or(500 << 30);
     let n = tauri::async_runtime::spawn_blocking(move || {
-        diskmap::analyze(&mount, used, |files, bytes| {
-            let _ = app.emit("disk-scan", serde_json::json!({ "files": files, "bytes": bytes }));
-        })
+        let app2 = app.clone();
+        diskmap::analyze(
+            &mount,
+            used,
+            |files, bytes| {
+                let _ = app.emit("disk-scan", serde_json::json!({ "files": files, "bytes": bytes }));
+            },
+            move |path, node| {
+                let _ = app2.emit("disk-part", serde_json::json!({ "path": path, "node": node }));
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?;
