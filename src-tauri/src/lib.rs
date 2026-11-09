@@ -51,6 +51,8 @@ struct AppState {
     seq_done: Mutex<HashSet<String>>,
     /// Packs d'épisodes : hash → fichier mis en priorité maximale (-1 = aucun encore)
     boosted: Mutex<HashMap<String, i64>>,
+    /// Épisodes cochés mais en attente (priorité 0 dans qBittorrent) : hash → fichier → infos
+    held: Mutex<HashMap<String, HashMap<i64, Held>>>,
     /// hash → (taille sélectionnée, fichiers cochés, fichiers au total)
     file_counts: Mutex<HashMap<String, (i64, u32, u32)>>,
     /// hash → type déduit du contenu (ex. un dossier rempli de .cbr = livre)
@@ -63,6 +65,69 @@ impl AppState {
     fn cfg(&self) -> Config {
         self.cfg.lock().unwrap().clone()
     }
+    fn save_held(&self) {
+        let map = self.held.lock().unwrap().clone();
+        let _ = std::fs::write(config::data_dir().join("held.json"), serde_json::to_vec(&map).unwrap_or_default());
+    }
+}
+
+/// Épisode en attente de son tour : priorité voulue, taille et octets déjà reçus (figés pendant l'attente)
+#[derive(Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+struct Held {
+    prio: i64,
+    size: i64,
+    done: i64,
+}
+
+fn load_held() -> HashMap<String, HashMap<i64, Held>> {
+    std::fs::read(config::data_dir().join("held.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// Packs d'épisodes : UN seul épisode téléchargé à la fois, dans l'ordre (01, puis 02…).
+/// Une priorité « haute » dans qBittorrent n'est qu'une préférence : les autres fichiers cochés
+/// avancent quand même. Donc les suivants passent à 0 dans qBittorrent (« en attente » ici) et
+/// démarrent quand le précédent est fini.
+/// Renvoie vrai si un épisode en attente vient d'être relancé.
+async fn enforce_order(st: &AppState, hash: &str, files: &[TorrentFile]) -> bool {
+    let mut media: Vec<&TorrentFile> = files.iter().filter(|f| is_media(&f.name)).collect();
+    if media.len() < 2 {
+        return false;
+    }
+    media.sort_by(|a, b| nat_cmp(&a.name, &b.name));
+    let held = st.held.lock().unwrap().get(hash).cloned().unwrap_or_default();
+    let prio_of = |f: &TorrentFile| if f.priority > 0 { f.priority } else { held.get(&f.index).map(|h| h.prio).unwrap_or(0) };
+    let pending: Vec<&TorrentFile> = media.iter().copied().filter(|f| f.progress < 1.0 && prio_of(f) > 0).collect();
+    // Épisode en cours : celui mis en priorité haute à la main, sinon le premier dans l'ordre
+    let active = pending.iter().find(|f| prio_of(f) >= 6).or(pending.first()).copied();
+    let mut next_held = HashMap::new();
+    let mut to_hold = Vec::new();
+    for f in &pending {
+        if Some(f.index) == active.map(|a| a.index) {
+            continue;
+        }
+        let keep = held.get(&f.index).copied();
+        next_held.insert(f.index, keep.unwrap_or(Held { prio: prio_of(f), size: f.size, done: (f.size as f64 * f.progress) as i64 }));
+        if f.priority > 0 {
+            to_hold.push(f.index);
+        }
+    }
+    if next_held != held {
+        let mut all = st.held.lock().unwrap();
+        if next_held.is_empty() {
+            all.remove(hash);
+        } else {
+            all.insert(hash.to_string(), next_held);
+        }
+        drop(all);
+        st.save_held();
+    }
+    if !to_hold.is_empty() {
+        let _ = st.qbit.set_file_priority(hash, &to_hold, 0).await;
+    }
+    if let Some(a) = active.filter(|a| a.priority == 0) {
+        return st.qbit.set_file_priority(hash, &[a.index], held.get(&a.index).map(|h| h.prio).unwrap_or(1)).await.is_ok();
+    }
+    false
 }
 
 fn ext_of(name: &str) -> String {
@@ -212,6 +277,22 @@ async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<Media>, String> 
         m.files_sel = Some(counts.1);
         m.files_total = Some(counts.2);
     }
+    {
+        let all = state.held.lock().unwrap();
+        for m in media.iter_mut() {
+            let Some(held) = all.get(&m.hash) else { continue };
+            let (size, done) = held.values().fold((0, 0), |(s, d), h| (s + h.size, d + h.done));
+            m.size += size;
+            m.completed += done;
+            m.progress = if m.size > 0 { m.completed as f64 / m.size as f64 } else { m.progress };
+            if m.dlspeed > 0 {
+                m.eta = (m.size - m.completed).max(0) / m.dlspeed;
+            }
+            if let Some(n) = m.files_sel.as_mut() {
+                *n += held.len() as u32;
+            }
+        }
+    }
 
     // Type déduit du contenu des fichiers (prioritaire sur le nom)
     for (m, r) in media.iter_mut().zip(&raw) {
@@ -348,12 +429,54 @@ async fn get_sources(state: State<'_, AppState>, hash: String) -> Result<Sources
 
 #[tauri::command]
 async fn get_files(state: State<'_, AppState>, hash: String) -> Result<Vec<TorrentFile>, String> {
-    state.qbit.files(&hash).await
+    let mut files = state.qbit.files(&hash).await?;
+    if let Some(held) = state.held.lock().unwrap().get(&hash) {
+        for f in files.iter_mut().filter(|f| f.priority == 0) {
+            if let Some(h) = held.get(&f.index) {
+                f.priority = h.prio;
+                f.queued = true;
+            }
+        }
+    }
+    Ok(files)
 }
 
 #[tauri::command]
 async fn set_file_priority(state: State<'_, AppState>, hash: String, ids: Vec<i64>, priority: i64) -> Result<(), String> {
-    state.qbit.set_file_priority(&hash, &ids, priority).await
+    // Épisode en attente : décoché → oublié ; autre priorité → retenue pour son tour
+    let mut ids = ids;
+    {
+        let mut all = state.held.lock().unwrap();
+        if let Some(held) = all.get_mut(&hash) {
+            if priority == 0 {
+                held.retain(|i, _| !ids.contains(i));
+            } else {
+                for i in &ids {
+                    if let Some(h) = held.get_mut(i) {
+                        h.prio = priority;
+                    }
+                }
+                if priority < 6 {
+                    ids.retain(|i| !held.contains_key(i));
+                }
+            }
+            if held.is_empty() {
+                all.remove(&hash);
+            }
+        }
+    }
+    state.save_held();
+    if !ids.is_empty() {
+        state.qbit.set_file_priority(&hash, &ids, priority).await?;
+    }
+    // Pack d'épisodes : on remet tout de suite dans l'ordre (sinon les épisodes cochés partent en même temps)
+    if priority > 0 && state.boosted.lock().unwrap().contains_key(&hash) {
+        if let Ok(files) = state.qbit.files(&hash).await {
+            enforce_order(&state, &hash, &files).await;
+        }
+    }
+    state.file_counts.lock().unwrap().remove(&hash);
+    Ok(())
 }
 
 /// Catégories qBittorrent + celles de OneForAll (créées au premier usage).
@@ -917,7 +1040,8 @@ async fn trash_torrent_files(state: State<'_, AppState>, hash: String, ids: Vec<
     let ts = state.qbit.torrents().await?;
     let save = ts.iter().find(|t| t.hash == hash).map(|t| t.save_path.clone()).ok_or("Torrent introuvable")?;
     let files = state.qbit.files(&hash).await?;
-    let wanted: HashSet<i64> = ids.into_iter().collect();
+    let held: HashSet<i64> = state.held.lock().unwrap().get(&hash).map(|h| h.keys().copied().collect()).unwrap_or_default();
+    let wanted: HashSet<i64> = ids.into_iter().filter(|i| !held.contains(i)).collect();
     // Par sécurité, seuls les fichiers décochés (priorité 0) peuvent être supprimés.
     let targets: Vec<(PathBuf, i64)> = files
         .iter()
@@ -1521,6 +1645,8 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
     // 0. Téléchargements qui viennent de se terminer → notification Windows
     let finished: Vec<Media> = {
         let mut last = st.last_progress.lock().unwrap();
+        // Pack dont des épisodes attendent leur tour : 100 % dans qBittorrent, mais pas fini
+        let held: HashSet<String> = st.held.lock().unwrap().keys().cloned().collect();
         let mut out = Vec::new();
         for t in &all {
             let before = last.insert(t.hash.clone(), (t.progress, t.state.clone()));
@@ -1529,7 +1655,7 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
             let was_downloading = before.is_some_and(|(p, s)| {
                 p < 0.999 && matches!(s.as_str(), "downloading" | "stalledDL" | "forcedDL" | "queuedDL")
             });
-            if was_downloading && t.progress >= 0.999 {
+            if was_downloading && t.progress >= 0.999 && !held.contains(&t.hash) {
                 out.push(Media::from_raw(t.clone()));
             }
         }
@@ -1615,11 +1741,25 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
         }
     }
 
+    {
+        let alive: HashSet<&str> = ts.iter().map(|t| t.hash.as_str()).collect();
+        let mut all = st.held.lock().unwrap();
+        let before = all.len();
+        all.retain(|h, _| alive.contains(h.as_str()));
+        let changed = all.len() != before;
+        drop(all);
+        if changed {
+            st.save_held();
+        }
+    }
+
     // 2. Vidéos et audio en cours → TOUJOURS téléchargés dans l'ordre (épisode 1, puis 2…)
     let mut seq = Vec::new();
     let mut flpp_toggle = Vec::new();
     for t in &ts {
-        if t.progress >= 1.0 || !t.has_metadata || matches!(t.state.as_str(), "pausedDL" | "stoppedDL") {
+        let waiting = st.held.lock().unwrap().contains_key(&t.hash);
+        // Épisode fini mais d'autres en attente : qBittorrent le croit terminé, on continue quand même
+        if (t.progress >= 1.0 && !waiting) || !t.has_metadata || matches!(t.state.as_str(), "pausedDL" | "stoppedDL") {
             continue;
         }
         if !matches!(detect_kind(&t.name, &t.category), Kind::Series | Kind::Anime | Kind::Film | Kind::Audio) {
@@ -1649,17 +1789,10 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
             }
         }
         if pack {
-            // Le premier épisode coché pas encore fini passe en priorité maximale, les autres attendent
-            let next = media.iter().find(|f| f.priority > 0 && f.progress < 1.0).map(|f| f.index);
-            let before = st.boosted.lock().unwrap().get(&t.hash).copied().unwrap_or(-1);
-            if let Some(idx) = next.filter(|i| *i != before) {
-                if st.qbit.set_file_priority(&t.hash, &[idx], 7).await.is_ok() {
-                    // On ne rabaisse que le fichier qu'on avait monté nous-mêmes (pas une priorité choisie à la main)
-                    if files.iter().any(|f| f.index == before && f.priority == 7) {
-                        let _ = st.qbit.set_file_priority(&t.hash, &[before], 1).await;
-                    }
-                    st.boosted.lock().unwrap().insert(t.hash.clone(), idx);
-                }
+            let released = enforce_order(st, &t.hash, &files).await;
+            // Arrêté par qBittorrent à « 100 % » (limite de partage) alors qu'un épisode vient d'être relancé
+            if released && matches!(t.state.as_str(), "pausedUP" | "stoppedUP") {
+                let _ = st.qbit.action(&[t.hash.clone()], "resume").await;
             }
         }
     }
@@ -1891,6 +2024,7 @@ pub fn run() {
         seen: Mutex::new(None),
         seq_done: Mutex::new(HashSet::new()),
         boosted: Mutex::new(HashMap::new()),
+        held: Mutex::new(load_held()),
         file_counts: Mutex::new(HashMap::new()),
         content_kind: Mutex::new(HashMap::new()),
         last_progress: Mutex::new(HashMap::new()),

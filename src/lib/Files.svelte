@@ -284,7 +284,7 @@
             {#if done}
               <span class="ok"><Icon name="check" size={12} /></span>{fmtSize(f.size)}
             {:else}
-              {#if etas.has(f.index)}<em>≈ {fmtEta(etas.get(f.index))}</em>{/if}
+              {#if f.queued}<em class="queued" title="Téléchargé après les épisodes précédents (un à la fois, dans l'ordre)">en attente</em>{:else if etas.has(f.index)}<em>≈ {fmtEta(etas.get(f.index))}</em>{/if}
               {f.priority > 0 || f.progress > 0 ? `${pct}% · ` : ""}{fmtSize(f.size)}
             {/if}
           </span>
@@ -342,6 +342,7 @@
   .bar span { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width 0.6s ease; }
   li.off .bar span { background: var(--muted); }
   .meta { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .meta em.queued { color: var(--muted); background: var(--chip); font-weight: 650; }
   .meta em { font-style: normal; color: var(--accent); font-weight: 700; padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); }
   .ok { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--ok); color: white; }
   .play { display: grid; place-items: center; width: 26px; height: 26px; padding-left: 2px; border-radius: 50%; border: 0; background: var(--chip); color: var(--text); cursor: pointer; flex: none; opacity: 0.6; transition: opacity 0.1s; }

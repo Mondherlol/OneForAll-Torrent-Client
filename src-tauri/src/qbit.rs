@@ -51,6 +51,8 @@ pub struct TorrentFile {
     pub progress: f64,
     pub priority: i64,
     pub availability: f64,
+    /// Coché mais en attente de son tour (épisodes téléchargés un par un, dans l'ordre)
+    pub queued: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]

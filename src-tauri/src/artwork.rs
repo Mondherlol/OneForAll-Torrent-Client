@@ -210,9 +210,13 @@ impl Artwork {
                 Some(a) => Some(a),
                 None => self.anilist(q, "ANIME").await?,
             },
+            // Steam, sinon Wikipédia anglais, sinon français (titres FR des jeux console : « Mario et Sonic aux Jeux olympiques »)
             "game" => match self.steam(q).await? {
                 Some(a) => Some(a),
-                None => self.wikipedia(q, None, "video game").await?,
+                None => match self.wikipedia(q, None, "video game").await? {
+                    Some(a) => Some(a),
+                    None => self.wikipedia_in("fr", q, None, "jeu vidéo").await?,
+                },
             },
             "other" => self.steam(q).await?.map(|a| a.kind("game")),
             "software" => match self.wikipedia(q, None, "software").await? {
@@ -286,11 +290,15 @@ impl Artwork {
 
     /// Image principale de l'article Wikipédia (en anglais) : l'affiche d'un film, la jaquette d'un jeu.
     async fn wikipedia(&self, q: &str, year: Option<u32>, hint: &str) -> Result<Option<Art>, reqwest::Error> {
+        self.wikipedia_in("en", q, year, hint).await
+    }
+
+    async fn wikipedia_in(&self, lang: &str, q: &str, year: Option<u32>, hint: &str) -> Result<Option<Art>, reqwest::Error> {
         let search = match year {
             Some(y) => format!("{q} {y} {hint}"),
             None => format!("{q} {hint}"),
         };
-        let req = self.client.get("https://en.wikipedia.org/w/api.php").query(&[
+        let req = self.client.get(format!("https://{lang}.wikipedia.org/w/api.php")).query(&[
             ("action", "query"),
             ("format", "json"),
             ("generator", "search"),
@@ -305,12 +313,17 @@ impl Artwork {
         let v = self.json(req).await?;
         let mut pages: Vec<&Value> = v["query"]["pages"].as_object().into_iter().flat_map(|m| m.values()).collect();
         pages.sort_by_key(|p| p["index"].as_i64().unwrap_or(99));
-        let hit = pages.into_iter().find_map(|p| {
-            let title = p["title"].as_str()?;
-            let img = p["thumbnail"]["source"].as_str()?;
-            let clean = title.split(" (").next().unwrap_or(title);
-            similar(q, clean).then(|| Art::new(img))
-        });
+        let found: Vec<(String, &str)> = pages
+            .into_iter()
+            .filter_map(|p| {
+                let title = p["title"].as_str()?;
+                let img = p["thumbnail"]["source"].as_str()?;
+                Some((title.split(" (").next().unwrap_or(title).to_string(), img))
+            })
+            .collect();
+        // Le titre exact d'abord (« Mario et Sonic aux Jeux olympiques » plutôt que « … d'hiver »)
+        let exact = found.iter().find(|(t, _)| words(t) == words(q));
+        let hit = exact.or_else(|| found.iter().find(|(t, _)| similar(q, t))).map(|(_, img)| Art::new(*img));
         Ok(hit)
     }
 
@@ -401,6 +414,7 @@ mod tests {
             ("series", "Loki"),
             ("film", "Deadpool 2"),
             ("game", "Animal Crossing New Horizons"),
+            ("game", "Mario Et Sonic Aux Jeux Olympiques"),
             ("other", "Meccha Chameleon"),
         ];
         tauri::async_runtime::block_on(async {
