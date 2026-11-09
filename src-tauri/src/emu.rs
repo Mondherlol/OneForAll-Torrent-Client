@@ -79,25 +79,27 @@ fn has(hay: &[u8], needle: &[u8]) -> bool {
 
 /// Image disque (.iso, .bin) : GameCube/Wii, PSP, PS2 ou PS1 d'après son contenu.
 fn sniff_disc(p: &Path) -> Option<&'static str> {
-    let mut f = std::fs::File::open(p).ok()?;
-    let head = read_at(&mut f, 0, 0x20);
-    if head.len() >= 0x20 && (head[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] || head[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D]) {
-        return Some("dolphin");
-    }
+    let f = std::fs::File::open(p).ok()?;
     // Les répertoires et SYSTEM.CNF sont au début du disque
     let mut data = Vec::new();
-    let _ = f.seek(SeekFrom::Start(0));
     let _ = f.take(8 << 20).read_to_end(&mut data);
-    if has(&data, b"PSP_GAME") || has(&data, b"UMD_DATA") {
+    sniff_disc_bytes(&data, std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+}
+
+/// Début d'une image disque (8 Mo) → émulateur
+fn sniff_disc_bytes(data: &[u8], size: u64) -> Option<&'static str> {
+    if data.len() >= 0x20 && (data[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] || data[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D]) {
+        return Some("dolphin");
+    }
+    if has(data, b"PSP_GAME") || has(data, b"UMD_DATA") {
         return Some("ppsspp");
     }
-    if has(&data, b"BOOT2") {
+    if has(data, b"BOOT2") {
         return Some("pcsx2");
     }
-    if has(&data, b"cdrom:") || has(&data, b"PLAYSTATION") {
+    if has(data, b"cdrom:") || has(data, b"PLAYSTATION") {
         return Some("duckstation");
     }
-    let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     (size > 1 << 30).then_some("pcsx2")
 }
 
@@ -164,8 +166,26 @@ fn detect_archive(p: &Path) -> Option<&'static Emu> {
     if let Some(m) = exts.iter().find_map(|x| EMUS.iter().find(|m| m.exts.contains(&x.as_str()))) {
         return Some(m);
     }
+    // Image disque (.iso…) : on lit son début directement dans l'archive (PSP, PS2, GameCube…)
+    for (entry, x) in entries.iter().zip(&exts) {
+        if matches!(x.as_str(), "iso" | "bin" | "img") {
+            if let Some(m) = archive_head(p, entry).and_then(|d| sniff_disc_bytes(&d, 0)).and_then(get) {
+                return Some(m);
+            }
+        }
+    }
     // Disque PS1 en .cue/.bin : le cas le plus courant
     exts.iter().any(|x| x == "cue").then(|| get("duckstation")).flatten()
+}
+
+/// Les 8 premiers Mo d'un fichier de l'archive, sans tout décompresser
+fn archive_head(p: &Path, entry: &str) -> Option<Vec<u8>> {
+    let mut child = tar().arg("-xOf").arg(p).arg(entry).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let mut data = Vec::new();
+    let _ = child.stdout.take()?.take(8 << 20).read_to_end(&mut data);
+    let _ = child.kill();
+    let _ = child.wait();
+    (!data.is_empty()).then_some(data)
 }
 
 /// Décompresse l'archive à côté d'elle (une seule fois) et renvoie la ROM à lancer.
@@ -463,6 +483,15 @@ mod tests {
         assert_eq!(detect(Path::new("Metroid.rvz")).map(|m| m.id), Some("dolphin"));
         assert!(is_rom(Path::new("game.iso")));
         assert!(!is_rom(Path::new("movie.mkv")));
+    }
+
+    #[test]
+    #[ignore]
+    fn live_user_zips() {
+        let dl = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap()).join("Downloads");
+        for f in ["WipEout Pulse (Europe Australia) (EnFrDeEsIt).zip", "Mega Man - Maverick Hunter X (Europe).zip"] {
+            println!("{f} → {:?}", detect(&dl.join(f)).map(|m| m.id));
+        }
     }
 
     #[test]

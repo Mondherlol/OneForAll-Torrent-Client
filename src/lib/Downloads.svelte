@@ -117,7 +117,7 @@
       emuDetect(p).then((r) => (roms[p] = r.emu ? r : null)).catch(() => {});
     }
   });
-  const isGame = (d) => d.kind === "game" || !!d.platform;
+  const isGame = (d) => d.kind === "game" || !!d.platform || !!romOf(d);
   const isArchive = (d) => /\.(zip|7z)$/i.test(d.name);
   let extracting = $state(null);
   async function extract(d) {

@@ -262,10 +262,12 @@
       if (init.source) {
         if (!GENRES.find((g) => g.id === genre).sources.includes(init.source)) genre = "all";
         source = init.source;
-      } else {
-        genre = GENRES.some((g) => g.id === init.kind) ? init.kind : "all";
-        source = "all";
+      } else if (init.kind && init.kind !== genre && GENRES.some((g) => g.id === init.kind)) {
+        // Une catégorie précise : son genre (le site choisi reste s'il en fait partie)
+        genre = init.kind;
+        if (source !== "all" && !GENRES.find((g) => g.id === genre).sources.includes(source)) source = "all";
       }
+      // Sans catégorie : on garde le genre et le site choisis la dernière fois
       epCode = init.code ?? null;
       prefer = init.prefer ?? null;
       search();

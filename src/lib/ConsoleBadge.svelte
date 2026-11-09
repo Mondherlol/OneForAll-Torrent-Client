@@ -86,8 +86,14 @@
       <circle cx="19" cy="11.2" r="1" fill="currentColor" />
       <circle cx="18" cy="13.2" r="1" fill="currentColor" />
     {:else if c.shape === "psp"}
-      <rect x="1" y="7" width="22" height="10" rx="5" fill="none" stroke="currentColor" stroke-width="1.8" />
-      <rect x="6.5" y="9" width="11" height="6" rx="0.6" fill="var(--c)" />
+      <!-- PSP : corps arrondi, grand écran, croix à gauche, 4 boutons à droite -->
+      <path d="M6.5 6.5h11a5.5 5.5 0 0 1 0 11h-11a5.5 5.5 0 0 1 0-11Z" fill="currentColor" fill-opacity="0.14" stroke="currentColor" stroke-width="1.5" />
+      <rect x="7.6" y="8.4" width="8.8" height="7.2" rx="0.8" fill="var(--c)" />
+      <path d="M2.9 12h2.8M4.3 10.6v2.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+      <circle cx="19.7" cy="10.8" r="0.65" fill="currentColor" />
+      <circle cx="19.7" cy="13.2" r="0.65" fill="currentColor" />
+      <circle cx="18.5" cy="12" r="0.65" fill="currentColor" />
+      <circle cx="20.9" cy="12" r="0.65" fill="currentColor" />
     {:else if c.shape === "remote"}
       <rect x="8" y="2" width="8" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
       <path d="M10.5 6.5h3M12 5v3" stroke="var(--c)" stroke-width="1.6" />
