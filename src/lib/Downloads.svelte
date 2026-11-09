@@ -7,7 +7,7 @@
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, wantArt } from "./ui.svelte.js";
-  import { dlExtract, emuDetect } from "./api.js";
+  import { dlExtract, dlSetKind, emuDetect } from "./api.js";
   import ConsoleBadge from "./ConsoleBadge.svelte";
   import { emuById, play } from "./emu.svelte.js";
 
@@ -224,6 +224,15 @@
       { label: "Déplacer…", icon: "move", run: () => moveTo(d) },
       { label: "Copier le lien", icon: "copy", run: () => copy(d.url) },
       !d.media && { label: "Choisir l'image…", icon: "image", run: () => pickArt(artFor(d)) },
+      !d.media && {
+        label: "Type",
+        icon: "tag",
+        sub: Object.entries(KIND_LABEL).map(([k, label]) => ({
+          label,
+          checked: d.kind === k,
+          run: () => dlSetKind(d.id, k).then(onrefresh).catch((err) => flash(String(err))),
+        })),
+      },
       "-",
       { label: "Retirer de la liste", icon: "close", run: () => remove(d, false) },
       d.done > 0 && { label: "Supprimer avec le fichier", icon: "trash", danger: true, run: () => remove(d, true) },

@@ -48,6 +48,21 @@ pub const ASSOC_DEFAULT: &[&str] = &["nds", "dsi", "gba", "gb", "gbc", "3ds", "c
 pub const ASSOC_OPEN_WITH: &[&str] = &["iso", "cue", "bin"];
 const AMBIGUOUS: &[&str] = &["iso", "cue", "bin", "chd", "pbp", "img"];
 
+/// Console d'un émulateur (pour l'affichage)
+pub fn platform_of(id: &str) -> &'static str {
+    match id {
+        "melonds" => "Nintendo DS",
+        "mgba" => "Game Boy Advance",
+        "azahar" => "3DS",
+        "duckstation" => "PlayStation",
+        "pcsx2" => "PS2",
+        "ppsspp" => "PSP",
+        "dolphin" => "GameCube",
+        "ryujinx" => "Switch",
+        _ => "",
+    }
+}
+
 pub fn get(id: &str) -> Option<&'static Emu> {
     EMUS.iter().find(|e| e.id == id)
 }

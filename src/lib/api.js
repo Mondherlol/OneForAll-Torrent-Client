@@ -75,3 +75,4 @@ export const romVersions = (page) => invoke("rom_versions", { page });
 /** meta : { title, platform, thumb } du jeu (titre, console et jaquette dans l'onglet DL) */
 export const romDownload = (page, meta = {}) => invoke("rom_download", { page, title: meta.title ?? "", platform: meta.platform ?? "", thumb: meta.thumb ?? "" });
 export const dlExtract = (id) => invoke("dl_extract", { id });
+export const dlSetKind = (id, kind) => invoke("dl_set_kind", { id, kind });

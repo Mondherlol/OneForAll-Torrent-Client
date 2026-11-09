@@ -20,6 +20,20 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// « film », « game »… (type choisi à la main)
+    pub fn parse(s: &str) -> Option<Kind> {
+        Some(match s {
+            "film" => Kind::Film,
+            "series" => Kind::Series,
+            "anime" => Kind::Anime,
+            "game" => Kind::Game,
+            "software" => Kind::Software,
+            "book" => Kind::Book,
+            "audio" => Kind::Audio,
+            "other" => Kind::Other,
+            _ => return None,
+        })
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Kind::Film => "film",

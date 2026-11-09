@@ -669,6 +669,25 @@ struct DirectView {
 #[tauri::command]
 fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
     let split = state.cfg().split_anime;
+    // ROM terminées (téléchargées hors site de ROM) : reconnues une fois, en arrière-plan
+    let romish = |d: &direct::Dl| {
+        let p = d.final_path();
+        emu::is_rom(&p) || emu::is_archive(&p)
+    };
+    let todo = state.direct.take_unchecked(romish);
+    if !todo.is_empty() {
+        let direct = state.direct.clone();
+        std::thread::spawn(move || {
+            for d in todo {
+                if let Some(m) = emu::detect(&d.final_path()) {
+                    let stem = d.final_path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                    // « Mega Man - Maverick Hunter X (Europe) » → « Mega Man - Maverick Hunter X »
+                    let title = regex::Regex::new(r"s*[([][^)]]*[)]]").unwrap().replace_all(&stem.replace('_', " "), "").trim().to_string();
+                    direct.set_game(&d.id, if title.is_empty() { &stem } else { &title }, emu::platform_of(m.id));
+                }
+            }
+        });
+    }
     let mut out: Vec<DirectView> = state
         .direct
         .list()
@@ -689,10 +708,18 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
                 };
             }
             // Jeu d'un site de ROM : son vrai titre (pas le nom du .zip), donc la bonne jaquette
-            if !d.game.is_empty() {
+            if !d.game.is_empty() && (d.kind.is_empty() || d.kind == "game") {
                 m.kind = Kind::Game;
                 m.title = d.game.clone();
                 m.group_key = format!("game:{}", media::normalize(&d.game));
+            }
+            // Type choisi à la main
+            if let Some(k) = Kind::parse(&d.kind) {
+                if k != m.kind {
+                    let rest = m.group_key.split_once(':').map(|(_, r)| r.to_string()).unwrap_or_default();
+                    m.group_key = format!("{}:{rest}", if matches!(k, Kind::Series | Kind::Anime) { "show" } else { k.as_str() });
+                    m.kind = k;
+                }
             }
             DirectView {
                 platform: d.platform.clone(),
@@ -1953,6 +1980,12 @@ fn emu_detect(path: String) -> emu::Rom {
     emu::rom_info(std::path::Path::new(&path))
 }
 
+/// Type d'un téléchargement choisi à la main (« » = automatique)
+#[tauri::command]
+fn dl_set_kind(state: State<'_, AppState>, id: String, kind: String) {
+    state.direct.set_kind(&id, &kind);
+}
+
 /// Extrait l'archive d'un téléchargement (ROM .zip / .7z) à côté d'elle et retient la ROM.
 #[tauri::command]
 async fn dl_extract(state: State<'_, AppState>, id: String) -> Result<emu::Rom, String> {
@@ -2176,6 +2209,7 @@ pub fn run() {
             rom_versions,
             rom_download,
             dl_extract,
+            dl_set_kind,
             get_torrents,
             torrent_action,
             get_files,

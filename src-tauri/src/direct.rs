@@ -85,6 +85,10 @@ pub struct Dl {
     pub platform: String,
     /// ROM extraite de l'archive (prête à lancer)
     pub rom: String,
+    /// Type choisi à la main (« game », « film »…) ; vide = automatique
+    pub kind: String,
+    /// Fichier terminé déjà analysé (est-ce une ROM ?)
+    pub rom_checked: bool,
 }
 
 impl Dl {
@@ -514,6 +518,37 @@ impl Direct {
         });
         self.save();
         id
+    }
+
+    pub fn set_kind(&self, id: &str, kind: &str) {
+        self.update(id, |d| d.kind = kind.to_string());
+        self.save();
+    }
+
+    /// Fichiers terminés pas encore analysés (ROM ?) : marqués tout de suite pour ne les analyser qu'une fois
+    pub fn take_unchecked(&self, is_candidate: impl Fn(&Dl) -> bool) -> Vec<Dl> {
+        let mut out = Vec::new();
+        for d in self.0.list.lock().unwrap().iter_mut() {
+            if d.st == St::Done && !d.rom_checked && d.game.is_empty() && d.media.is_empty() {
+                d.rom_checked = true;
+                if is_candidate(d) {
+                    out.push(d.clone());
+                }
+            }
+        }
+        if !out.is_empty() {
+            self.0.dirty.store(true, Ordering::Relaxed);
+        }
+        out
+    }
+
+    /// Jeu reconnu après coup (ROM téléchargée sans passer par un site de ROM)
+    pub fn set_game(&self, id: &str, game: &str, platform: &str) {
+        self.update(id, |d| {
+            d.game = game.to_string();
+            d.platform = platform.to_string();
+        });
+        self.save();
     }
 
     /// ROM extraite de l'archive téléchargée
