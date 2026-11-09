@@ -8,7 +8,8 @@ export const ui = $state({
   studio: null, // chemin de la vidéo ouverte dans le studio d'extraits
   roms: [], // ROM à lancer (fenêtre « Jouer »)
   diskMap: null, // { mount, used } : fenêtre « Analyser le stockage »
-  artPick: null, // { key, kind, title, year } : fenêtre « Choisir l'image »
+  artPick: null,
+  rename: null, // { key, title } : fenêtre « Vrai nom du jeu » // { key, kind, title, year } : fenêtre « Choisir l'image »
 });
 
 export function openMenu(e, items) {
@@ -66,7 +67,7 @@ function pump() {
   while (running < 4 && queue.length) {
     const g = queue.shift();
     running++;
-    getArtwork(g.artKey, g.kind, g.title, g.year)
+    getArtwork(g.artKey, g.kind, g.artTitle ?? g.title, g.year)
       .then((a) => (arts[g.artKey] = a ?? null))
       .catch(() => {})
       .finally(() => {
@@ -79,7 +80,7 @@ function pump() {
 
 /** Fenêtre « Choisir l'image » pour un groupe (affiche, jaquette…) */
 export function pickArt(g) {
-  ui.artPick = { key: g.artKey, kind: g.kind, title: g.title, year: g.year ?? null };
+  ui.artPick = { key: g.artKey, kind: g.kind, title: g.artTitle ?? g.title, year: g.year ?? null };
 }
 
 export async function refreshArt(key) {
@@ -160,4 +161,22 @@ export function alignEpisodes(sched, owned, season, now = Date.now()) {
   const maxOwned = owned.size ? Math.max(...owned) : 0;
   const offset = sched.source === "anilist" && lastAired && maxOwned > lastAired ? maxOwned - lastAired : 0;
   return offset ? eps.map((e) => ({ ...e, number: e.number + offset })) : eps;
+}
+
+// ---------- vrai nom des jeux hors torrent (ROM trouvées, téléchargements directs) ----------
+// carte → { name, show } : name sert à chercher la jaquette et les infos ; show = l'afficher sur la carte
+export const gameNames = $state(JSON.parse(localStorage.getItem("oneforall.gameNames") ?? "{}"));
+export function setGameName(key, name, show) {
+  if (name) gameNames[key] = { name, show };
+  else delete gameNames[key];
+  localStorage.setItem("oneforall.gameNames", JSON.stringify(gameNames));
+}
+/** Applique le nom choisi à une carte : clé d'image propre à ce nom */
+export function withGameName(g) {
+  const o = gameNames[g.key];
+  if (!o) return g;
+  return { ...g, artKey: `game:named:${o.name.toLowerCase()}`, artTitle: o.name, origTitle: g.title, title: o.show ? o.name : g.title };
+}
+export function renameGame(g) {
+  ui.rename = { key: g.key, title: g.origTitle ?? g.title };
 }

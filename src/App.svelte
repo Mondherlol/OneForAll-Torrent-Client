@@ -65,9 +65,10 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { getCategories, getDisks, getTorrents, openPath, play, reveal, runSetup, setCategory, setLocation, shareTorrents, torrentAction, uninstallProgram } from "./lib/api.js";
   import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, THEMES, buildGroups, fmtSize, themeOf, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
-  import { confirmAsk, copy, flash, openMenu, openStudio, pickArt, ui } from "./lib/ui.svelte.js";
+  import { confirmAsk, copy, flash, openMenu, openStudio, pickArt, renameGame, ui, withGameName } from "./lib/ui.svelte.js";
   import ArtPicker from "./lib/ArtPicker.svelte";
   import DiskMap from "./lib/DiskMap.svelte";
+  import RenameGame from "./lib/RenameGame.svelte";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
   let prefs = $state({ ...DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.prefs") ?? "{}") });
@@ -115,6 +116,7 @@
         };
       })
       .concat(romCards(q))
+      .map(withGameName)
       .filter((g) => matchStatus(g.status, prefs.status))
       .sort((a, b) => b.added_on - a.added_on);
   });
@@ -175,6 +177,7 @@
     const r = g.rom;
     openMenu(e, [
       { label: "Jouer", icon: "play", run: () => romPlay(r) },
+      { label: "Vrai nom du jeu…", icon: "tag", run: () => renameGame(g) },
       { label: "Choisir l'image…", icon: "image", run: () => pickArt(g) },
       { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(r.path, null).catch((err) => flash(String(err))) },
       "-",
@@ -212,6 +215,7 @@
     openMenu(e, [
       d.st === "done" && { label: "Jouer", icon: "play", run: () => dlPlay(d) },
       d.st === "done" && zip && (d.rom ? { label: "Supprimer le zip (déjà extrait)", icon: "trash", run: () => dlExtractCard(d) } : { label: "Extraire le jeu", icon: "layers", run: () => dlExtractCard(d) }),
+      { label: "Vrai nom du jeu…", icon: "tag", run: () => renameGame(g) },
       { label: "Choisir l'image…", icon: "image", run: () => pickArt(g) },
       { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(d.path, d.dir).catch((err) => flash(String(err))) },
       "-",
@@ -1090,6 +1094,7 @@
 {/if}
 {#if ui.roms.length}<Play />{/if}
 {#if ui.artPick}<ArtPicker />{/if}
+{#if ui.rename}<RenameGame />{/if}
 {#if ui.diskMap}<DiskMap mount={ui.diskMap.mount} used={ui.diskMap.used} {torrents} {downloads} onclose={() => (ui.diskMap = null)} />{/if}
 <Confirm />
 
