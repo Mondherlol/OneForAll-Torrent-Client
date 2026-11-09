@@ -376,7 +376,7 @@
             <div class="dh">
               <b><Icon name="drive" size={15} />{d.mount.replace(/\\$/, "")} {d.name ? `· ${d.name}` : ""}</b>
               <span>{fmtSize(d.free)} libres sur {fmtSize(d.total)}</span>
-              <button class="btn sm analyze" onclick={() => (ui.diskMap = { mount: d.mount, used: d.total - d.free })}><Icon name="layers" size={13} />Analyser le stockage</button>
+              <button class="btn sm analyze" onclick={() => (ui.diskMap = { mount: d.mount, used: d.total - d.free })}><Icon name="pie" size={14} />Analyser</button>
             </div>
             <div class="dbar">
               <span class="other" style="width:{((used - mine) / d.total) * 100}%"></span>
