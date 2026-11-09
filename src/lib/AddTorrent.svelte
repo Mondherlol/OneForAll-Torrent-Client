@@ -68,6 +68,7 @@
   const failed = $derived(Object.entries(status).filter(([, st]) => st.error));
   const error = $derived(results && !results.length && !loading && failed.length && failed.length === Object.keys(status).length ? failed.map(([id, st]) => (failed.length > 1 ? `${SOURCES[id].label} : ${st.error}` : st.error)).join(" · ") : null);
   let srcF = $state("all");
+  let asked = $state(""); // requête des résultats affichés (pour la pertinence)
 
   // Recherches récentes
   let recent = $state(JSON.parse(localStorage.getItem("oneforall.recent") ?? "[]"));
@@ -107,6 +108,7 @@
     const id = ++run;
     const srcs = targets;
     remember(q);
+    asked = q;
     selected = null;
     kindF = "all";
     srcF = "all";
@@ -171,6 +173,7 @@
 
   // ---------- tris & filtres ----------
   const SORTS = [
+    { id: "relevance", label: "Pertinence" },
     { id: "seeders", label: "Plus de sources" },
     { id: "date", label: "Plus récents" },
     { id: "size-desc", label: "Plus gros" },
@@ -183,7 +186,30 @@
     { id: "en", label: "EN" },
     { id: "raw", label: "Raw" },
   ];
-  let sortBy = $state("seeders");
+  let sortBy = $state("relevance");
+
+  // Pertinence : mots de la recherche présents dans le titre, expression exacte, titre court
+  const words = (t) =>
+    (t ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().replace(/&/g, " and ").split(/[^a-z0-9]+/).filter(Boolean);
+  const qWords = $derived(words(asked));
+  function relevance(title) {
+    const q = qWords;
+    if (!q.length) return 0;
+    const t = words(title);
+    const set = new Set(t);
+    const hit = q.filter((w) => set.has(w) || (w.length > 3 && t.some((x) => x.startsWith(w)))).length;
+    let score = (hit / q.length) * 100;
+    const tj = " " + t.join(" ") + " ", qj = " " + q.join(" ") + " ";
+    if (tj.includes(qj)) score += 30; // expression entière
+    if (tj.startsWith(qj)) score += 15; // le titre commence par la recherche
+    score -= Math.min(t.length - hit, 15); // mots en trop
+    return score;
+  }
+  const rel = $derived.by(() => {
+    const m = new Map();
+    for (const r of results ?? []) m.set(r.url, relevance(r.title));
+    return m;
+  });
   let kindF = $state("all");
   let langF = $state(localStorage.getItem("oneforall.lang") ?? "all");
   $effect(() => localStorage.setItem("oneforall.lang", langF));
@@ -211,6 +237,7 @@
         (!epCode || !epOnly || matchesEp(r.title)),
     );
     const cmp = {
+      relevance: (a, b) => rel.get(b.url) - rel.get(a.url) || b.seeders - a.seeders,
       seeders: (a, b) => b.seeders - a.seeders,
       date: (a, b) => ts(b.date) - ts(a.date),
       "size-desc": (a, b) => b.size - a.size,

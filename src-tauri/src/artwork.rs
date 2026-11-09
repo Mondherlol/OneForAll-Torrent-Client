@@ -1,6 +1,6 @@
 //! Recherche d'affiches, sans clé API par défaut :
 //! séries → TVmaze, animés → AniList, films → iTunes puis Wikipédia (ou TMDB si une clé est fournie),
-//! jeux → Steam puis Wikipédia, livres/mangas → AniList, audio → iTunes.
+//! jeux → IGDB (si l'app est compilée avec ses identifiants) puis Steam puis Wikipédia, livres/mangas → AniList, audio → iTunes.
 //! Les résultats sont mis en cache dans %APPDATA%\OneForAll\artwork.json.
 //! La source permet aussi de corriger le type : un « autre » trouvé sur Steam est un jeu,
 //! une série que TVmaze classe en animation japonaise est un animé.
@@ -40,6 +40,18 @@ impl Art {
 pub struct Artwork {
     client: Client,
     cache: Mutex<HashMap<String, Option<Art>>>,
+    /// Jeton IGDB (Twitch) et sa date d'expiration
+    igdb_token: Mutex<Option<(String, std::time::Instant)>>,
+}
+
+// Identifiants IGDB intégrés à la compilation (.env.local, jamais dans le dépôt).
+// Avec le secret, l'app obtient et renouvelle elle-même son jeton ; sinon le jeton fixe est utilisé.
+const IGDB_ID: Option<&str> = option_env!("ONEFORALL_IGDB_CLIENT_ID");
+const IGDB_SECRET: Option<&str> = option_env!("ONEFORALL_IGDB_SECRET");
+const IGDB_TOKEN: Option<&str> = option_env!("ONEFORALL_IGDB_TOKEN");
+
+fn igdb_enabled() -> bool {
+    IGDB_ID.is_some_and(|s| !s.is_empty()) && (IGDB_SECRET.is_some_and(|s| !s.is_empty()) || IGDB_TOKEN.is_some_and(|s| !s.is_empty()))
 }
 
 fn cache_path() -> std::path::PathBuf {
@@ -103,7 +115,14 @@ impl Artwork {
             .unwrap_or_default();
         // Les « rien trouvé » ne sont gardés que le temps d'une session : on réessaie au prochain lancement
         cache.retain(|_, v| v.is_some());
-        Self { client, cache: Mutex::new(cache) }
+        // Première fois avec IGDB : on oublie les images de jeux venues de Steam / Wikipédia
+        let marker = data_dir().join("artwork.igdb");
+        if igdb_enabled() && !marker.is_file() {
+            cache.retain(|_, v| v.as_ref().is_some_and(|a| !(a.url.contains("steamstatic") || a.url.contains("wikimedia") || a.url.contains("wikipedia"))));
+            let _ = std::fs::create_dir_all(data_dir());
+            let _ = std::fs::write(&marker, "1");
+        }
+        Self { client, cache: Mutex::new(cache), igdb_token: Mutex::new(None) }
     }
 
     pub async fn get(&self, key: &str, kind: &str, title: &str, year: Option<u32>, tmdb_key: &str) -> Option<Art> {
@@ -211,11 +230,15 @@ impl Artwork {
                 None => self.anilist(q, "ANIME").await?,
             },
             // Steam, sinon Wikipédia anglais, sinon français (titres FR des jeux console : « Mario et Sonic aux Jeux olympiques »)
-            "game" => match self.steam(q).await? {
+            // IGDB (jaquettes officielles, consoles comprises), sinon Steam, Wikipédia anglais puis français
+            "game" => match self.igdb(q).await {
+                Some(a) => Some(a),
+                None => match self.steam(q).await? {
                 Some(a) => Some(a),
                 None => match self.wikipedia(q, None, "video game").await? {
                     Some(a) => Some(a),
                     None => self.wikipedia_in("fr", q, None, "jeu vidéo").await?,
+                },
                 },
             },
             "other" => self.steam(q).await?.map(|a| a.kind("game")),
@@ -226,6 +249,63 @@ impl Artwork {
             "book" => self.anilist(q, "MANGA").await?,
             "audio" => self.itunes(q, "audiobook", "600x600bb").await?,
             _ => None,
+        })
+    }
+
+    /// Jeton d'accès IGDB : demandé à Twitch avec le secret (valable ~60 jours), gardé en mémoire.
+    async fn igdb_auth(&self, renew: bool) -> Option<String> {
+        if let Some((t, until)) = self.igdb_token.lock().unwrap().clone() {
+            if !renew && until > std::time::Instant::now() {
+                return Some(t);
+            }
+        }
+        let id = IGDB_ID.filter(|s| !s.is_empty())?;
+        let Some(secret) = IGDB_SECRET.filter(|s| !s.is_empty()) else {
+            return IGDB_TOKEN.filter(|s| !s.is_empty()).map(str::to_string);
+        };
+        let v: Value = self
+            .client
+            .post("https://id.twitch.tv/oauth2/token")
+            .query(&[("client_id", id), ("client_secret", secret), ("grant_type", "client_credentials")])
+            .send()
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()?;
+        let token = v["access_token"].as_str()?.to_string();
+        let ttl = v["expires_in"].as_u64().unwrap_or(3600).saturating_sub(300);
+        *self.igdb_token.lock().unwrap() = Some((token.clone(), std::time::Instant::now() + Duration::from_secs(ttl)));
+        Some(token)
+    }
+
+    /// Jaquette IGDB du jeu le plus proche du titre (une erreur → on passe aux autres sources).
+    async fn igdb(&self, q: &str) -> Option<Art> {
+        if !igdb_enabled() {
+            return None;
+        }
+        let id = IGDB_ID?;
+        let body = format!("search \"{}\"; fields name,alternative_names.name,cover.image_id,artworks.image_id; limit 10;", q.replace('"', " "));
+        let mut renew = false;
+        let games: Vec<Value> = loop {
+            let token = self.igdb_auth(renew).await?;
+            let res = self.client.post("https://api.igdb.com/v4/games").header("Client-ID", id).bearer_auth(&token).body(body.clone()).send().await.ok()?;
+            if res.status() == reqwest::StatusCode::UNAUTHORIZED && !renew {
+                renew = true; // jeton expiré : on en redemande un
+                continue;
+            }
+            break res.error_for_status().ok()?.json().await.ok()?;
+        };
+        let img = |id: &str, size: &str| format!("https://images.igdb.com/igdb/image/upload/{size}/{id}.jpg");
+        games.iter().find_map(|g| {
+            let names = std::iter::once(g["name"].as_str()?).chain(g["alternative_names"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()));
+            if !names.into_iter().any(|n| similar(q, n)) {
+                return None;
+            }
+            let cover = g["cover"]["image_id"].as_str()?;
+            let mut a = Art::new(img(cover, "t_cover_big_2x")).fallback(img(cover, "t_cover_big"));
+            a.kind = Some("game".into());
+            Some(a)
         })
     }
 
@@ -403,6 +483,16 @@ mod tests {
     use super::*;
 
     /// `cargo test live_lookup -- --ignored --nocapture` (réseau requis)
+    #[test]
+    #[ignore]
+    fn live_igdb() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let art = Artwork::new();
+        for q in ["Time Hollow", "Mario & Sonic at the Olympic Games", "Pokemon Emerald"] {
+            println!("{q} → {:?}", rt.block_on(art.igdb(q)));
+        }
+    }
+
     #[test]
     #[ignore]
     fn live_lookup() {

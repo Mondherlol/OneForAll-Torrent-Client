@@ -20,7 +20,7 @@ Il faut [qBittorrent](https://www.qbittorrent.org/download) installé (OneForAll
 
 ## Ce que ça fait
 
-- 🖼️ **Affiches automatiques** (TMDB, TVmaze, AniList, Steam, Wikipédia, iTunes) et type détecté : films, séries, animés, jeux, logiciels, livres, audio
+- 🖼️ **Affiches automatiques** (TMDB, TVmaze, AniList, IGDB, Steam, Wikipédia, iTunes) et type détecté : films, séries, animés, jeux, logiciels, livres, audio
 - 📺 **Séries regroupées** : un épisode par ligne, badge S1 · É6, épisodes téléchargés dans l'ordre
 - ✅ **Choix des fichiers à l'ajout** : « les 3 premiers », une saison, tout… avec alerte si le disque est trop petit
 - 🔎 **Recherche intégrée** : C411 (Torznab), Nyaa, Online-Fix et FitGirl (jeux), NXBrew (Switch, liens hébergeurs), magnet, glisser-déposer de .torrent
@@ -67,6 +67,8 @@ Il lit les secrets dans `.env.local` (jamais commité) :
 
 ```ini
 ONEFORALL_TMDB_KEY=ta_cle_tmdb                       # intégrée à l'app compilée
+ONEFORALL_IGDB_CLIENT_ID=…                           # app Twitch (dev.twitch.tv) : jaquettes de jeux IGDB
+ONEFORALL_IGDB_SECRET=…                              # l'app renouvelle elle-même son jeton
 TAURI_SIGNING_PRIVATE_KEY_PATH=C:\Users\toi\.tauri\oneforall.key
 # TAURI_SIGNING_PRIVATE_KEY_PASSWORD=…               # si la clé a un mot de passe
 # GITHUB_TOKEN=…                                     # sinon le jeton de Git est utilisé

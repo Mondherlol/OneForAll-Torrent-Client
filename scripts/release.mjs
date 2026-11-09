@@ -50,6 +50,8 @@ const keyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH || path.join(os.homed
 if (!fs.existsSync(keyPath)) fail(`Clé de signature introuvable : ${keyPath}\n  Crée-la avec : npx tauri signer generate -w "${keyPath}"`);
 if (!process.env.ONEFORALL_TMDB_KEY) console.warn("⚠ ONEFORALL_TMDB_KEY absent de .env.local : l'app sera publiée sans clé TMDB intégrée.");
 
+if (!process.env.ONEFORALL_IGDB_CLIENT_ID) console.warn("⚠ ONEFORALL_IGDB_CLIENT_ID absent de .env.local : pas de jaquettes IGDB pour les jeux.");
+
 // ---------- version ----------
 const pkgPath = path.join(ROOT, "package.json");
 const confPath = path.join(ROOT, "src-tauri", "tauri.conf.json");
