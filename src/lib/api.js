@@ -78,3 +78,8 @@ export const dlExtract = (id) => invoke("dl_extract", { id });
 export const dlSetKind = (id, kind) => invoke("dl_set_kind", { id, kind });
 export const trendsCatalog = (kind) => invoke("trends_catalog", { kind });
 export const sitePopular = (source, genre) => invoke("site_popular", { source, genre });
+export const romLibrary = () => invoke("rom_library");
+export const romScan = () => invoke("rom_scan");
+export const diskAnalyze = (mount) => invoke("disk_analyze", { mount });
+export const diskAnalyzeCancel = () => invoke("disk_analyze_cancel");
+export const trashPath = (path) => invoke("trash_path", { path });

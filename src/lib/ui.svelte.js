@@ -7,6 +7,7 @@ export const ui = $state({
   toast: null,
   studio: null, // chemin de la vidéo ouverte dans le studio d'extraits
   roms: [], // ROM à lancer (fenêtre « Jouer »)
+  diskMap: null, // { mount, used } : fenêtre « Analyser le stockage »
   artPick: null, // { key, kind, title, year } : fenêtre « Choisir l'image »
 });
 

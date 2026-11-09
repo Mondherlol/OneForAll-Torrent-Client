@@ -5,7 +5,7 @@
   import Icon from "./Icon.svelte";
   import { getDisks, getLimits, getSettings, saveSettings, scanTorrents, setLimits, testNotification, openDefaultApps, getSeeding, setSeeding, setCustomIcon, getCustomIcon, organizeShows, trashFiles, reveal } from "./api.js";
   import { KINDS, THEMES, fmtDate, fmtSize, fmtSpeed } from "./model.js";
-  import { confirmAsk, flash } from "./ui.svelte.js";
+  import { confirmAsk, flash, ui } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
   import { chooseExe, emus, installEmu, loadEmus, removeEmu } from "./emu.svelte.js";
   import { openUrl } from "./api.js";
@@ -376,6 +376,7 @@
             <div class="dh">
               <b><Icon name="drive" size={15} />{d.mount.replace(/\\$/, "")} {d.name ? `· ${d.name}` : ""}</b>
               <span>{fmtSize(d.free)} libres sur {fmtSize(d.total)}</span>
+              <button class="btn sm analyze" onclick={() => (ui.diskMap = { mount: d.mount, used: d.total - d.free })}><Icon name="layers" size={13} />Analyser le stockage</button>
             </div>
             <div class="dbar">
               <span class="other" style="width:{((used - mine) / d.total) * 100}%"></span>
@@ -610,9 +611,9 @@
 
   .disks { display: flex; flex-direction: column; gap: 12px; }
   .disk { padding: 14px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
-  .dh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; }
+  .dh { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; font-size: 13px; }
   .dh b { display: inline-flex; gap: 8px; align-items: center; }
-  .dh span { color: var(--muted); }
+  .dh span { color: var(--muted); margin-left: auto; }
   .dbar { display: flex; height: 10px; border-radius: 6px; background: var(--chip); overflow: hidden; }
   .dbar .mine, .legend i.mine { background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
   .dbar .other, .legend i.other { background: var(--muted); opacity: 0.45; }

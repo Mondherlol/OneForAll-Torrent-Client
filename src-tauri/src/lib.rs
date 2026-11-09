@@ -4,6 +4,7 @@ mod chapters;
 mod clip;
 mod config;
 mod customicon;
+mod diskmap;
 mod direct;
 mod emu;
 mod installed;
@@ -11,6 +12,7 @@ mod media;
 mod trends;
 mod player;
 mod qbit;
+mod romscan;
 mod qsetup;
 mod scan;
 mod schedule;
@@ -697,8 +699,61 @@ struct DirectView {
     note: String,
 }
 
+// ---------- ROM déjà sur les disques ----------
+
+#[tauri::command]
+fn rom_library() -> Vec<romscan::LocalRom> {
+    romscan::library()
+}
+
+/// Cherche les ROM sur tous les disques (avancement : événement « rom-scan »)
+#[tauri::command]
+async fn rom_scan(app: tauri::AppHandle) -> Result<Vec<romscan::LocalRom>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        romscan::scan(|files, found| {
+            let _ = app.emit("rom-scan", serde_json::json!({ "files": files, "found": found }));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+// ---------- analyse d'un disque ----------
+
+/// Arbre des dossiers et gros fichiers du disque (avancement : événement « disk-scan »)
+#[tauri::command]
+async fn disk_analyze(app: tauri::AppHandle, mount: String) -> Result<diskmap::Node, String> {
+    let used = scan::disks().into_iter().find(|d| d.mount == mount).map(|d| d.total - d.free).unwrap_or(500 << 30);
+    let n = tauri::async_runtime::spawn_blocking(move || {
+        diskmap::analyze(&mount, used, |files, bytes| {
+            let _ = app.emit("disk-scan", serde_json::json!({ "files": files, "bytes": bytes }));
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if diskmap::CANCEL.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("Analyse annulée".into());
+    }
+    Ok(n)
+}
+
+#[tauri::command]
+fn disk_analyze_cancel() {
+    diskmap::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Met un fichier ou un dossier à la corbeille (analyse du disque). Jamais la racine d'un disque.
+#[tauri::command]
+fn trash_path(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.parent().is_none() || p.components().count() < 2 {
+        return Err("Impossible de supprimer ce dossier".into());
+    }
+    trash::delete(p).map_err(|e| format!("Suppression impossible : {e}"))
+}
+
 /// « Mega Man - Maverick Hunter X (Europe) [b] » → « Mega Man - Maverick Hunter X »
-fn strip_tags(s: &str) -> String {
+pub(crate) fn strip_tags(s: &str) -> String {
     static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\s*[\(\[][^\)\]]*[\)\]]").unwrap());
     let t = RE.replace_all(s, "").trim().to_string();
     if t.is_empty() {
@@ -2248,6 +2303,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             emu_list,
             emu_detect,
+            rom_library,
+            rom_scan,
+            disk_analyze,
+            disk_analyze_cancel,
+            trash_path,
             emu_find_roms,
             emu_install,
             emu_play,

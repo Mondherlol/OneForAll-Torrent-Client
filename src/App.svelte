@@ -16,7 +16,7 @@
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
   import Studio from "./lib/Studio.svelte";
-  import { getDownloads, emuDetect, downloadAction, dlExtract } from "./lib/api.js";
+  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan } from "./lib/api.js";
   import { play as playGame } from "./lib/emu.svelte.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -67,6 +67,7 @@
   import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, THEMES, buildGroups, fmtSize, themeOf, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
   import { confirmAsk, copy, flash, openMenu, openStudio, pickArt, ui } from "./lib/ui.svelte.js";
   import ArtPicker from "./lib/ArtPicker.svelte";
+  import DiskMap from "./lib/DiskMap.svelte";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
   let prefs = $state({ ...DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.prefs") ?? "{}") });
@@ -113,9 +114,73 @@
           eta: d.eta,
         };
       })
+      .concat(romCards(q))
       .filter((g) => matchStatus(g.status, prefs.status))
       .sort((a, b) => b.added_on - a.added_on);
   });
+
+  // ROM déjà sur le PC (bouton « Scanner mes ROM ») : sauf celles d'un torrent ou d'un téléchargement
+  let romLib = $state([]);
+  let hiddenRoms = $state(new Set(JSON.parse(localStorage.getItem("oneforall.hiddenRoms") ?? "[]")));
+  let romScanning = $state(null); // { files, found } pendant le scan
+  romLibrary().then((l) => (romLib = l)).catch(() => {});
+  function romCards(q) {
+    const low = (p) => (p ?? "").toLowerCase();
+    const owned = [
+      ...torrents.filter((t) => t.content_path).map((t) => low(t.content_path)),
+      ...downloads.flatMap((d) => [low(d.path), low(d.rom), low(d.path).replace(/\.(zip|7z)$/, "")]).filter(Boolean),
+    ];
+    return romLib
+      .filter((r) => !hiddenRoms.has(r.path) && (!q || r.title.toLowerCase().includes(q)))
+      .filter((r) => !owned.some((o) => low(r.path) === o || low(r.path).startsWith(o + "\\")))
+      .map((r) => ({
+        key: `rom:${r.path}`,
+        rom: r,
+        artKey: r.art_key,
+        kind: "game",
+        title: r.title,
+        year: null,
+        seasons: [],
+        items: [{ hash: r.path, progress: 1, status: "done", format: "rom", platform: r.platform }],
+        progress: 1,
+        status: "done",
+        size: r.size,
+        added_on: r.added_on,
+        completion_on: r.added_on,
+        dlspeed: 0,
+        eta: 0,
+      }));
+  }
+  async function scanRoms() {
+    romScanning = { files: 0, found: 0 };
+    const un = await listen("rom-scan", (e) => romScanning && (romScanning = e.payload));
+    try {
+      const before = new Set(romLib.map((r) => r.path));
+      romLib = await romScan();
+      const added = romLib.filter((r) => !before.has(r.path)).length;
+      flash(added ? `${added} jeu${added > 1 ? "x" : ""} trouvé${added > 1 ? "s" : ""} sur le PC` : "Aucun nouveau jeu trouvé");
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      un();
+      romScanning = null;
+    }
+  }
+  function hideRom(r) {
+    hiddenRoms = new Set([...hiddenRoms, r.path]);
+    localStorage.setItem("oneforall.hiddenRoms", JSON.stringify([...hiddenRoms]));
+  }
+  const romPlay = (r) => playGame({ path: r.path, name: r.title, emu: r.emu, size: r.size });
+  function romCardMenu(e, g) {
+    const r = g.rom;
+    openMenu(e, [
+      { label: "Jouer", icon: "play", run: () => romPlay(r) },
+      { label: "Choisir l'image…", icon: "image", run: () => pickArt(g) },
+      { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(r.path, null).catch((err) => flash(String(err))) },
+      "-",
+      { label: "Masquer ce jeu", icon: "close", run: () => hideRom(r) },
+    ]);
+  }
   async function dlPlay(d) {
     if (d.st !== "done") return;
     try {
@@ -365,7 +430,8 @@
     // + les jeux téléchargés hors torrent (affichés dans l'onglet Jeux)
     const q = query.trim().toLowerCase();
     const games = downloads.filter((d) => d.kind === "game" && matchStatus(DL_ST[d.st] ?? "done", prefs.status) && (!q || d.title.toLowerCase().includes(q))).length;
-    if (games) c.game = (c.game ?? 0) + games;
+    const roms = matchStatus("done", prefs.status) ? romCards(q).length : 0;
+    if (games + roms) c.game = (c.game ?? 0) + games + roms;
     return c;
   });
   const statusCounts = $derived.by(() => {
@@ -910,7 +976,7 @@
           <small class="detail">{error}</small>
         {/if}
       </div>
-    {:else if loaded && !visible.length && !dlCards.length}
+    {:else if loaded && !visible.length && !dlCards.length && prefs.kind !== "game"}
       <div class="empty" in:fade>
         <Icon name="search" size={40} />
         <h2>Rien ici</h2>
@@ -935,17 +1001,27 @@
         {/each}
       </div>
       {/if}
-      {#if dlCards.length}
+      {#if prefs.kind === "game"}
         <section class="dlsec" in:fade>
           <h3>
-            <span class="dlsec-ic"><Icon name="download" size={14} /></span>Téléchargés hors torrent
-            <span class="dlsec-n">{dlCards.length}</span>
-            <button class="dlsec-go" onclick={() => (view = "downloads")}>Voir l'onglet DL<Icon name="chevron" size={13} /></button>
+            <span class="dlsec-ic"><Icon name="game" size={14} /></span>Hors torrent
+            {#if dlCards.length}<span class="dlsec-n">{dlCards.length}</span>{/if}
+            <span class="dlsec-sub">téléchargés en direct et ROM trouvées sur le PC</span>
+            <button class="dlsec-scan" disabled={!!romScanning} onclick={scanRoms} title="Cherche sur tous tes disques les jeux DS, GBA, PSP, Switch… déjà téléchargés">
+              {#if romScanning}<span class="spin dark"></span>{romScanning.files.toLocaleString("fr-FR")} fichiers · {romScanning.found} jeu{romScanning.found > 1 ? "x" : ""}{:else}<Icon name="search" size={14} />Scanner mes ROM{/if}
+            </button>
           </h3>
+          {#if !dlCards.length}
+            <p class="dlsec-empty">Tes jeux DS, GBA, PSP, Switch… déjà sur le PC peuvent apparaître ici : clique sur « Scanner mes ROM ».</p>
+          {/if}
           <div class="grid">
             {#each dlCards as g (g.key)}
               <div class="cell" animate:flip={{ duration: 280 }}>
-                <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => dlPlay(g.dl)} oncontext={(e) => dlCardMenu(e, g)} onaction={dlCardAction(g.dl)} />
+                {#if g.rom}
+                  <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => romPlay(g.rom)} oncontext={(e) => romCardMenu(e, g)} onaction={(n) => n === "reveal" && reveal(g.rom.path, null).catch((e) => flash(String(e)))} />
+                {:else}
+                  <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => dlPlay(g.dl)} oncontext={(e) => dlCardMenu(e, g)} onaction={dlCardAction(g.dl)} />
+                {/if}
               </div>
             {/each}
           </div>
@@ -1014,6 +1090,7 @@
 {/if}
 {#if ui.roms.length}<Play />{/if}
 {#if ui.artPick}<ArtPicker />{/if}
+{#if ui.diskMap}<DiskMap mount={ui.diskMap.mount} used={ui.diskMap.used} {torrents} {downloads} onclose={() => (ui.diskMap = null)} />{/if}
 <Confirm />
 
 {#if ui.toast}
@@ -1178,8 +1255,12 @@
   .dlsec:first-child h3 { border-top: 0; padding-top: 10px; }
   .dlsec-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
   .dlsec-n { padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; font-weight: 650; }
-  .dlsec-go { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
-  .dlsec-go:hover { background: var(--accent-soft); }
+  .dlsec-sub { font-size: 12px; font-weight: 500; color: var(--muted); }
+  .spin.dark { border-color: var(--line-strong); border-top-color: var(--accent); }
+  .dlsec-empty { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+  .dlsec-scan { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; font-variant-numeric: tabular-nums; }
+  .dlsec-scan:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .dlsec-scan:disabled { cursor: default; color: var(--muted); }
   .band { position: fixed; z-index: 30; border: 1.5px solid var(--accent); background: var(--accent-soft); border-radius: 4px; pointer-events: none; }
 
   .selbar {
