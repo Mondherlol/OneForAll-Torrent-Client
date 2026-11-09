@@ -3,8 +3,9 @@
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
+  import ConsoleBadge from "./ConsoleBadge.svelte";
   import Carousel from "./Carousel.svelte";
-  import { hostDownload, nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
+  import { getSettings, hostDownload, nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
   import icoNyaa from "../assets/sources/nyaa.png";
@@ -50,7 +51,15 @@
   ];
   let genre = $state(localStorage.getItem("oneforall.genre") ?? "all");
   if (!GENRES.some((g) => g.id === genre)) genre = "all";
-  const genreSources = $derived(GENRES.find((g) => g.id === genre).sources);
+  // C411 sans clé API : le site n’apparaît pas (on ne pourrait rien y chercher)
+  let hasC411 = $state(localStorage.getItem("oneforall.hasC411") !== "0");
+  getSettings()
+    .then((st) => {
+      hasC411 = !!st.c411_key?.trim();
+      localStorage.setItem("oneforall.hasC411", hasC411 ? "1" : "0");
+    })
+    .catch(() => {});
+  const genreSources = $derived(GENRES.find((g) => g.id === genre).sources.filter((x) => x !== "c411" || hasC411));
   // "all" = tous les sites du genre, en parallèle
   let source = $state(localStorage.getItem("oneforall.source") ?? "all");
   $effect(() => localStorage.setItem("oneforall.source", source));
@@ -336,6 +345,18 @@
       })
       .slice(0, 24);
   }
+  // NXBrew : « Base Game XCI (3.10 GB) » → { name: "Jeu de base", size: "3,10 Go" }
+  function nxSection(label) {
+    const m = label.match(/\(([\d.,]+)\s*([KMGT])B\)/i);
+    const size = m ? `${m[1].replace(".", ",")} ${m[2].toUpperCase()}o` : "";
+    let name = label.replace(/\s*\([^)]*\)/g, "").replace(/\b(NSP|XCI|NSZ|XCZ|ROM)\b/gi, "").trim();
+    name = name.replace(/^Base Game/i, "Jeu de base").replace(/^Update/i, "Mise à jour").trim();
+    return { name: name || label, size };
+  }
+  const HOST_COLORS = { datanodes: "#2563eb", "1fichier": "#f97316", gofile: "#0ea5e9", mediafire: "#1e88e5", pixeldrain: "#16a34a", buzzheavier: "#a855f7", multiup: "#e11d48" };
+  const hostColor = (h) => HOST_COLORS[Object.keys(HOST_COLORS).find((k) => h.toLowerCase().replace(/\s/g, "").includes(k))] ?? "#64748b";
+  const getHost = (url) => hostDownload(url, { title: selected.clean || selected.title, platform: selected.platform || "Switch", thumb: selected.thumb ?? "" }).catch((e) => flash(String(e)));
+
   function openTrend(t) {
     query = t.query;
     search();
@@ -654,21 +675,25 @@
         <!-- Aperçu du torrent avant téléchargement -->
         {@const art = arts[selected.art_key]}
         {@const already = have.has(selected.hash) || added.has(selected.url)}
+        {@const isTorrent = selected.source === "c411" || selected.source === "nyaa"}
         <aside class="preview" transition:fly={{ x: 20, duration: 160 }}>
           <div class="pv-head">
-            {#if selected.thumb || art?.url}<img class="pv-poster" src={selected.thumb || art.url} alt="" />{:else}<span class="pv-poster ph"><Icon name={selected.kind} size={28} /></span>{/if}
+            <span class="pv-cover">
+              {#if selected.thumb || art?.url}<img class="pv-poster" src={selected.thumb || art.url} alt="" />{:else}<span class="pv-poster ph"><Icon name={selected.kind} size={28} /></span>{/if}
+              {#if selected.platform || selected.source === "nxbrew"}<span class="pv-badge"><ConsoleBadge platform={selected.platform || "Switch"} small /></span>{/if}
+            </span>
             <div class="pv-ht">
-              <span class="kb k-{selected.kind}">{KIND_LABEL[selected.kind] ?? "Autre"}{selected.year ? ` · ${selected.year}` : ""}</span>
               <h3>{selected.clean || selected.title}</h3>
               <div class="pv-stats">
-                {#if selected.seeders >= 0}<span><b class="seed" class:dead={selected.seeders === 0}>{selected.seeders}</b> seeders</span>
-                <span><b>{selected.leechers}</b> leechers</span>{/if}
-                <span><b>{fmtSize(selected.size)}</b></span>
+                {#if selected.year}<span>{selected.year}</span>{/if}
+                {#if selected.seeders >= 0}<span><b class="seed" class:dead={selected.seeders === 0}>↑ {selected.seeders}</b></span>{/if}
+                {#if selected.size > 0}<span><b>{fmtSize(selected.size)}</b></span>{/if}
+                <span class="pv-src">{@render sico(selected.source)}{SOURCES[selected.source]?.label}</span>
               </div>
             </div>
             <button class="pv-x" title="Fermer l'aperçu" onclick={() => (selected = null)}><Icon name="close" size={14} /></button>
           </div>
-          <p class="pv-raw" title={selected.title}>{selected.title}</p>
+          {#if isTorrent && selected.title !== selected.clean}<p class="pv-raw" title={selected.title}>{selected.title}</p>{/if}
 
           <div class="pv-files">
             {#if preview?.loading}
@@ -679,17 +704,26 @@
               {#if !preview.nx.length}
                 <p class="hint">Aucun lien trouvé sur la page — ouvre-la sur le site.</p>
               {:else}
-                <p class="nx-note">Clique un lien : une fenêtre s'ouvre, fais la vérification <b>ouo.io</b>, OneForAll fait le reste et le fichier arrive dans l'onglet Téléchargements.</p>
                 {#each preview.nx as s}
-                  <h4>{s.label}</h4>
-                  {#each s.hosts as h}
-                    <div class="nx-host">
-                      <span class="nx-name">{h.host}</span>
-                      <span class="nx-links">
-                        {#each h.links as l}<button class="nx-link" title={l.url} onclick={() => hostDownload(l.url, { title: selected.clean || selected.title, platform: "Switch", thumb: selected.thumb ?? "" }).catch((e) => flash(String(e)))}>{l.label}</button>{/each}
-                      </span>
+                  {@const sec = nxSection(s.label)}
+                  <div class="nx-sec">
+                    <div class="nx-sh"><b>{sec.name}</b>{#if sec.size}<span>{sec.size}</span>{/if}</div>
+                    <div class="nx-hosts">
+                      {#each s.hosts as h}
+                        {@const hc = hostColor(h.host)}
+                        {#if h.links.length === 1}
+                          <button class="nx-btn" style="--hc:{hc}" title="Une fenêtre s'ouvre : fais la vérification ouo.io, OneForAll fait le reste" onclick={() => getHost(h.links[0].url)}>
+                            <span class="nx-ava">{h.host.slice(0, 1).toUpperCase()}</span><b>{h.host}</b><Icon name="download" size={16} />
+                          </button>
+                        {:else}
+                          <div class="nx-multi" style="--hc:{hc}">
+                            <span class="nx-ava">{h.host.slice(0, 1).toUpperCase()}</span><b>{h.host}</b>
+                            <span class="nx-parts">{#each h.links as l, i}<button onclick={() => getHost(l.url)} title="Partie {i + 1}">{i + 1}</button>{/each}</span>
+                          </div>
+                        {/if}
+                      {/each}
                     </div>
-                  {/each}
+                  </div>
                 {/each}
               {/if}
             {:else if preview?.data}
@@ -907,13 +941,23 @@
   .pv-files li:hover { background: var(--chip); }
   .fname { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .fsize { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .nx-note { margin: 10px 4px 4px; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
-  .nx-host { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-radius: 6px; }
-  .nx-host:hover { background: var(--chip); }
-  .nx-name { width: 84px; flex: none; font-size: 12px; font-weight: 700; }
-  .nx-links { display: flex; flex-wrap: wrap; gap: 4px; }
-  .nx-link { height: 24px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--accent); font: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; }
-  .nx-link:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .nx-sec { margin-top: 12px; }
+  .nx-sh { display: flex; align-items: baseline; gap: 8px; margin: 0 2px 8px; }
+  .nx-sh b { font-size: 13.5px; }
+  .nx-sh span { font-size: 12px; font-weight: 650; color: var(--muted); }
+  .nx-hosts { display: flex; flex-direction: column; gap: 6px; }
+  .nx-btn, .nx-multi { display: flex; align-items: center; gap: 10px; width: 100%; height: 44px; padding: 0 12px 0 7px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: border-color 0.12s, background 0.12s, transform 0.12s; }
+  .nx-btn b, .nx-multi b { flex: 1; font-size: 13.5px; }
+  .nx-btn :global(svg) { color: var(--hc); }
+  .nx-btn:hover { border-color: var(--hc); background: color-mix(in srgb, var(--hc) 8%, var(--surface)); transform: translateY(-1px); }
+  .nx-multi { cursor: default; }
+  .nx-ava { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; background: var(--hc); color: white; font-size: 14px; font-weight: 800; flex: none; }
+  .nx-parts { display: flex; gap: 4px; }
+  .nx-parts button { min-width: 30px; height: 28px; border-radius: 8px; border: 1.5px solid var(--line-strong); background: var(--bg-2); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .nx-parts button:hover { border-color: var(--hc); color: var(--hc); }
+  .pv-cover { position: relative; flex: none; }
+  .pv-badge { position: absolute; left: 50%; bottom: -8px; translate: -50% 0; }
+  .pv-src { display: inline-flex; align-items: center; gap: 5px; }
   .pv-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
 
   .pad { flex: 1; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
