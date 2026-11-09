@@ -6,7 +6,7 @@ export const getFiles = (hash) => invoke("get_files", { hash });
 export const setFilePriority = (hash, ids, priority) => invoke("set_file_priority", { hash, ids, priority });
 export const getCategories = () => invoke("get_categories");
 export const setCategory = (hashes, category) => invoke("set_category", { hashes, category });
-export const reveal = (path, fallback) => invoke("reveal", { path, fallback });
+export const reveal = (path, fallback) => invoke("reveal", { path, fallback: fallback ?? "" });
 export const openPath = (path) => invoke("open_path", { path });
 export const getSettings = () => invoke("get_settings");
 export const saveSettings = (settings) => invoke("save_settings", { settings });
