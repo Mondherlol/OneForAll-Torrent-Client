@@ -7,6 +7,8 @@
   import Settings from "./lib/Settings.svelte";
   import ContextMenu from "./lib/ContextMenu.svelte";
   import Confirm from "./lib/Confirm.svelte";
+  import Play from "./lib/Play.svelte";
+  import { emuTakePending } from "./lib/api.js";
   import AddTorrent from "./lib/AddTorrent.svelte";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { listen } from "@tauri-apps/api/event";
@@ -136,6 +138,18 @@
     if (res.hashes?.length) staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];
     refresh();
   }
+
+  // ROM double-cliquée dont l'émulateur n'est pas prêt → fenêtre « Jouer »
+  async function takeRoms() {
+    const r = await emuTakePending().catch(() => []);
+    if (r.length) ui.roms = [...ui.roms, ...r.filter((x) => !ui.roms.includes(x))];
+  }
+  $effect(() => {
+    let un;
+    takeRoms();
+    listen("rom-open", takeRoms).then((f) => (un = f));
+    return () => un?.();
+  });
 
   // .torrent ouvert depuis l'Explorateur / lien magnet cliqué
   $effect(() => {
@@ -904,6 +918,7 @@
 {#if ui.studio}
   <Studio path={ui.studio} onexported={() => ((view = "downloads"), refreshDownloads())} />
 {/if}
+{#if ui.roms.length}<Play />{/if}
 <Confirm />
 
 {#if ui.toast}

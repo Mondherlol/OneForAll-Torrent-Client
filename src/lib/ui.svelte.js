@@ -6,6 +6,7 @@ export const ui = $state({
   confirm: null, // { title, text, ok, danger, resolve }
   toast: null,
   studio: null, // chemin de la vidéo ouverte dans le studio d'extraits
+  roms: [], // ROM à lancer (fenêtre « Jouer »)
 });
 
 export function openMenu(e, items) {

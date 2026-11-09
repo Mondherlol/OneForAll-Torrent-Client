@@ -5,6 +5,7 @@ mod clip;
 mod config;
 mod customicon;
 mod direct;
+mod emu;
 mod installed;
 mod media;
 mod player;
@@ -1742,9 +1743,71 @@ fn open_default_apps() -> Result<(), String> {
     explorer("ms-settings:defaultapps?registeredAppUser=OneForAll".into())
 }
 
+// ---------- émulateurs ----------
+
+#[tauri::command]
+fn emu_list() -> Vec<emu::EmuInfo> {
+    let map = emu::installed();
+    emu::EMUS.iter().map(|m| emu::info(m, &map)).collect()
+}
+
+#[tauri::command]
+fn emu_detect(path: String) -> emu::Rom {
+    emu::rom_info(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn emu_find_roms(path: String) -> Vec<emu::Rom> {
+    emu::find_roms(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+async fn emu_install(app: tauri::AppHandle, id: String) -> Result<emu::EmuInfo, String> {
+    let m = emu::get(&id).ok_or("Émulateur inconnu")?;
+    let a = app.clone();
+    emu::install(m, move |pct, msg| {
+        let _ = a.emit("emu-progress", serde_json::json!({ "id": m.id, "pct": pct, "msg": msg }));
+    })
+    .await?;
+    Ok(emu::info(m, &emu::installed()))
+}
+
+#[tauri::command]
+fn emu_play(path: String, id: String) -> Result<(), String> {
+    let map = emu::installed();
+    let inst = map.get(&id).ok_or("Cet émulateur n'est pas installé")?;
+    emu::play(std::path::Path::new(&path), std::path::Path::new(&inst.exe))
+}
+
+#[tauri::command]
+fn emu_set_exe(id: String, exe: String) -> Result<emu::EmuInfo, String> {
+    let m = emu::get(&id).ok_or("Émulateur inconnu")?;
+    if !exe.to_lowercase().ends_with(".exe") || !std::path::Path::new(&exe).is_file() {
+        return Err("Choisis le fichier .exe de l'émulateur".into());
+    }
+    emu::set_exe(m.id, &exe, "perso")?;
+    Ok(emu::info(m, &emu::installed()))
+}
+
+#[tauri::command]
+fn emu_remove(id: String) -> Result<(), String> {
+    emu::forget(&id)
+}
+
+#[tauri::command]
+fn emu_take_pending() -> Vec<String> {
+    emu::take_pending()
+}
+
 /// Ajoute les .torrent / liens magnet reçus au lancement (double-clic sur un fichier, clic sur un lien).
 /// Si qBittorrent démarre encore, on attend qu'il soit prêt (40 s max).
 fn open_from_args(app: tauri::AppHandle, args: Vec<String>) {
+    // ROM double-cliquée : lancée tout de suite si son émulateur est installé, sinon fenêtre « Jouer »
+    let roms = emu::rom_args(&args);
+    if !roms.is_empty() && emu::open_or_queue(roms) {
+        show_main(&app);
+        let _ = app.emit("rom-open", ());
+    }
     let (magnets, files) = assoc::torrent_args(&args);
     if magnets.is_empty() && files.is_empty() {
         return;
@@ -1839,7 +1902,10 @@ pub fn run() {
         })
         // Relancer OneForAll alors qu'il tourne déjà → on rouvre simplement la fenêtre
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            show_main(app);
+            // Jeu lancé directement dans son émulateur : inutile d'afficher OneForAll
+            if emu::rom_args(&args).is_empty() {
+                show_main(app);
+            }
             open_from_args(app.clone(), args);
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -1891,6 +1957,14 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            emu_list,
+            emu_detect,
+            emu_find_roms,
+            emu_install,
+            emu_play,
+            emu_set_exe,
+            emu_remove,
+            emu_take_pending,
             get_torrents,
             torrent_action,
             get_files,

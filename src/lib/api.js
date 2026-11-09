@@ -58,3 +58,13 @@ export const getWatch = (paths) => invoke("get_watch", { paths });
 export const setWatched = (paths, watched) => invoke("set_watched", { paths, watched });
 // Lecture suivie dans VLC (position exacte, pistes audio / sous-titres retenues par série)
 export const playFiles = (hash, paths) => invoke("play_files", { hash, paths });
+
+// ---------- émulateurs ----------
+export const emuList = () => invoke("emu_list");
+export const emuDetect = (path) => invoke("emu_detect", { path });
+export const emuFindRoms = (path) => invoke("emu_find_roms", { path });
+export const emuInstall = (id) => invoke("emu_install", { id });
+export const emuPlay = (path, id) => invoke("emu_play", { path, id });
+export const emuSetExe = (id, exe) => invoke("emu_set_exe", { id, exe });
+export const emuRemove = (id) => invoke("emu_remove", { id });
+export const emuTakePending = () => invoke("emu_take_pending");

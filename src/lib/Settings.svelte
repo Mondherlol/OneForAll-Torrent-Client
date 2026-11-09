@@ -7,6 +7,8 @@
   import { KINDS, THEMES, fmtDate, fmtSize, fmtSpeed } from "./model.js";
   import { confirmAsk, flash } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
+  import { chooseExe, emus, installEmu, loadEmus, removeEmu } from "./emu.svelte.js";
+  import { openUrl } from "./api.js";
 
   let { prefs, torrents, tab = $bindable("general"), onclose } = $props();
 
@@ -15,6 +17,7 @@
     { id: "folders", label: "Dossiers", icon: "folder" },
     { id: "storage", label: "Stockage", icon: "drive" },
     { id: "torrents", label: "Fichiers .torrent", icon: "torrent" },
+    { id: "emulators", label: "Émulateurs", icon: "game" },
   ];
   const MEDIA_KINDS = KINDS.filter((k) => k.id !== "all" && k.id !== "other");
   const MB = 1024 * 1024;
@@ -131,6 +134,7 @@
   let disks = $state([]);
   $effect(() => {
     if (tab === "storage") getDisks().then((d) => (disks = d));
+    if (tab === "emulators") loadEmus();
   });
   const drive = (p) => (p.match(/^[a-z]:/i)?.[0] ?? "").toUpperCase();
   const usage = $derived.by(() => {
@@ -395,6 +399,38 @@
           <li><span title={t.name}>{t.title}</span><b>{fmtSize(t.completed)}</b></li>
         {/each}
       </ul>
+    {:else if tab === "emulators"}
+      <h3>Émulateurs</h3>
+      <p class="hint">
+        Double-clique sur un jeu (.nds, .gba, .3ds, .nsp, .iso…) ou clique sur « Jouer » dans un jeu console : OneForAll le lance dans le bon
+        émulateur, et l'installe d'abord s'il le faut (version officielle, dans ton dossier OneForAll).
+      </p>
+      <div class="emus">
+        {#each emus.list as e (e.id)}
+          {@const pr = emus.progress[e.id]}
+          <div class="emu">
+            <div class="et">
+              <b>{e.name}</b>
+              <span>{e.consoles}</span>
+              {#if pr}<span class="ep">{pr.msg} {pr.pct ? `${pr.pct} %` : ""}</span>
+              {:else if e.installed}<span class="eok" title={e.installed.exe}><Icon name="check" size={12} />Installé{e.installed.version === "perso" ? " (ton exe)" : e.installed.version && e.installed.version !== "latest" ? ` · ${e.installed.version}` : ""}</span>{/if}
+            </div>
+            <div class="ea">
+              {#if e.installed}
+                <button class="btn sm" title="Ouvrir son dossier" onclick={() => reveal(e.installed.exe, e.installed.exe)}><Icon name="folder" size={13} /></button>
+                {#if !e.manual && e.installed.version !== "perso"}<button class="btn sm" disabled={!!pr} title="Retélécharger la dernière version" onclick={() => installEmu(e.id)}><Icon name="refresh" size={13} /></button>{/if}
+                <button class="btn sm" title="Retirer" onclick={() => removeEmu(e.id)}><Icon name="trash" size={13} /></button>
+              {:else if e.manual}
+                <button class="btn sm" onclick={() => openUrl(e.page)}><Icon name="open" size={13} />Site</button>
+                <button class="btn sm" onclick={() => chooseExe(e.id)}>Choisir l'exe…</button>
+              {:else}
+                <button class="btn sm" disabled={!!pr} onclick={() => chooseExe(e.id)} title="Tu l'as déjà ? Indique son .exe">J'ai déjà</button>
+                <button class="btn sm primary" disabled={!!pr} onclick={() => installEmu(e.id)}><Icon name="download" size={13} />Installer</button>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
     {:else if tab === "torrents"}
       <h3>Fichiers .torrent sur tes disques</h3>
       <p class="hint">
@@ -511,6 +547,14 @@
   .text { flex: 1; height: 36px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; outline: none; min-width: 0; }
   .text:focus, .unit input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
 
+  .emus { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .emu { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 11px; background: var(--surface); border: 1px solid var(--line); }
+  .et { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+  .et b { font-size: 13.5px; }
+  .et span { font-size: 12px; color: var(--muted); }
+  .et .eok { display: inline-flex; align-items: center; gap: 4px; color: var(--ok); font-weight: 650; }
+  .et .ep { color: var(--accent); font-weight: 650; }
+  .ea { display: flex; gap: 6px; flex: none; }
   .themes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
   .theme { display: flex; flex-direction: column; gap: 6px; padding: 5px; border-radius: 11px; border: 1.5px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; cursor: pointer; transition: border-color 0.12s, transform 0.12s; }
   .theme:hover { border-color: var(--accent); transform: translateY(-1px); }

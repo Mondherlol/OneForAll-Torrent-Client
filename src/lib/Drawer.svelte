@@ -6,6 +6,8 @@
   import { KINDS, STATUS_LABEL, fmtEta, fmtPos, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
   import { getWatch, setWatched } from "./api.js";
   import { flash } from "./ui.svelte.js";
+  import { emuFindRoms } from "./api.js";
+  import { emuById, emus, loadEmus, play } from "./emu.svelte.js";
   import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup, alignEpisodes } from "./ui.svelte.js";
 
   let { group: g, onclose, onaction, onitemmenu } = $props();
@@ -125,6 +127,25 @@
   // Installation Windows : seulement pour les jeux PC / logiciels (pas un .nsp de Switch…)
   const installable = $derived((g.kind === "game" || g.kind === "software") && !g.items.some((i) => i.platform));
   let tab = $state("files");
+
+  // Jeu console téléchargé : ses ROM, à lancer dans le bon émulateur
+  const isConsole = $derived(g.items.some((i) => i.platform));
+  const romsReady = $derived(isConsole && g.items.every((i) => i.progress >= 1));
+  let roms = $state([]);
+  let romSel = $state(0);
+  $effect(() => {
+    if (!romsReady) {
+      roms = [];
+      return;
+    }
+    const loc = location;
+    if (!emus.list.length) loadEmus();
+    emuFindRoms(loc).then((r) => {
+      if (loc === location) (roms = r), (romSel = 0);
+    });
+  });
+  const rom = $derived(roms[romSel]);
+  const romEmu = $derived(rom?.emu ? emuById(rom.emu) : null);
   const installed = $derived(g.items.find((i) => i.installed)?.installed);
   const art = $derived(arts[g.artKey]);
   let posterOk = $state(true);
@@ -205,6 +226,23 @@
     <button class="ib danger" title={single ? "Supprimer" : `Supprimer les ${g.items.length} torrents`} onclick={(e) => onaction("removeMenu", { e, items: g.items })}><Icon name="trash" size={15} /></button>
     <button class="ib" title="Plus d'actions" onclick={(e) => onitemmenu(e, g.items[0], g)}><Icon name="more" size={15} /></button>
   </div>
+
+  {#if rom}
+    <div class="install ok play-band">
+      <Icon name="game" size={16} />
+      <div class="it">
+        <b>{romEmu ? `Jouer avec ${romEmu.name}` : "Jouer"}</b>
+        {#if roms.length > 1}
+          <select bind:value={romSel} title="Quel fichier lancer">
+            {#each roms as r, i}<option value={i}>{r.name}</option>{/each}
+          </select>
+        {:else}
+          <span title={rom.path}>{romEmu ? (romEmu.installed ? romEmu.consoles : `${romEmu.consoles} · s'installe au premier lancement`) : rom.name}</span>
+        {/if}
+      </div>
+      <button class="sbtn primary" onclick={() => play(rom)}><Icon name="play" size={12} />Jouer</button>
+    </div>
+  {/if}
 
   {#if installable}
     {#if installed}
@@ -404,6 +442,7 @@
 
   .install { display: flex; align-items: center; gap: 10px; margin: 10px 14px 0; padding: 9px 10px 9px 12px; border-radius: 10px; background: var(--chip); color: var(--muted); }
   .install.ok { background: rgb(16 185 129 / 0.1); color: var(--ok); }
+  .play-band select { max-width: 100%; height: 24px; margin-top: 2px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 11.5px; }
   .it { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .it b { font-size: 13px; }
   .it span { font-size: 11.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

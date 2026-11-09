@@ -42,6 +42,21 @@ pub fn register() {
     set(r"Software\Classes\magnet\DefaultIcon", "", &icon);
     set(r"Software\Classes\magnet\shell\open\command", "", &command);
 
+    // ROM de jeux : jouées dans le bon émulateur
+    set(r"Software\Classes\OneForAll.rom", "", "Jeu (ROM)");
+    set(r"Software\Classes\OneForAll.rom\DefaultIcon", "", &icon);
+    set(r"Software\Classes\OneForAll.rom\shell\open", "", "Jouer avec OneForAll");
+    set(r"Software\Classes\OneForAll.rom\shell\open\command", "", &command);
+    for e in crate::emu::ASSOC_DEFAULT {
+        set(&format!(r"Software\Classes\.{e}"), "", "OneForAll.rom");
+        set(&format!(r"Software\Classes\.{e}\OpenWithProgids"), "OneForAll.rom", "");
+        set(r"Software\OneForAll\Capabilities\FileAssociations", &format!(".{e}"), "OneForAll.rom");
+    }
+    // Trop génériques (.iso, .cue, .bin) : seulement dans « Ouvrir avec »
+    for e in crate::emu::ASSOC_OPEN_WITH {
+        set(&format!(r"Software\Classes\.{e}\OpenWithProgids"), "OneForAll.rom", "");
+    }
+
     // Apparaît dans Paramètres > Applications par défaut
     set(r"Software\OneForAll\Capabilities", "ApplicationName", "OneForAll");
     set(r"Software\OneForAll\Capabilities", "ApplicationDescription", "Interface moderne pour vos torrents");
