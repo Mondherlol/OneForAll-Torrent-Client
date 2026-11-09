@@ -130,7 +130,7 @@
     try {
       const rom = await dlExtract(d.id);
       roms[rom.path] = rom.emu ? rom : null;
-      flash(`Extrait : ${rom.name}`);
+      flash(`${rom.name} extrait · zip mis à la corbeille`);
       onrefresh();
     } catch (e) {
       flash(String(e));
@@ -216,7 +216,7 @@
   function menu(e, d) {
     openMenu(e, [
       d.st === "done" && romOf(d) && { label: `Jouer avec ${emuById(romOf(d).emu)?.name ?? "l'émulateur"}`, icon: "game", run: () => play(romOf(d)) },
-      d.st === "done" && isArchive(d) && !d.rom && romOf(d) && { label: "Extraire le jeu", icon: "layers", run: () => extract(d) },
+      d.st === "done" && isArchive(d) && romOf(d) && (d.rom ? { label: "Supprimer le zip (déjà extrait)", icon: "trash", run: () => extract(d) } : { label: "Extraire le jeu", icon: "layers", run: () => extract(d) }),
       d.st === "done" && { label: "Ouvrir", icon: "open", run: () => openPath(d.path).catch((err) => flash(String(err))) },
       web(d) && { label: "Ouvrir la vidéo d'origine", icon: "open", run: () => openUrl(d.url).catch((err) => flash(String(err))) },
       isVideoFile(d) && { label: "Capturer un extrait…", icon: "scissors", run: () => openStudio(d.path) },

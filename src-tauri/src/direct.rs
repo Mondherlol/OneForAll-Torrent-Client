@@ -557,6 +557,15 @@ impl Direct {
         self.save();
     }
 
+    /// Archive extraite puis supprimée : le téléchargement devient le dossier extrait
+    pub fn set_extracted(&self, id: &str, rom: &str, folder: &str) {
+        self.update(id, |d| {
+            d.rom = rom.to_string();
+            d.name = folder.to_string();
+        });
+        self.save();
+    }
+
     pub fn add(&self, url: &str) -> String {
         self.add_media(url, "")
     }
@@ -655,7 +664,7 @@ impl Direct {
                         // Un fichier inachevé ne sert à rien : il part toujours. Le fichier terminé, seulement si demandé.
                         let _ = std::fs::remove_file(d.part_path());
                         let _ = std::fs::remove_file(d.compress_tmp());
-                        if action == "delete_files" && d.final_path().is_file() {
+                        if action == "delete_files" && d.final_path().exists() {
                             trash::delete(d.final_path()).map_err(|e| format!("Suppression impossible : {e}"))?;
                         }
                     }

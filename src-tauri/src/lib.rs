@@ -697,6 +697,17 @@ struct DirectView {
     note: String,
 }
 
+/// « Mega Man - Maverick Hunter X (Europe) [b] » → « Mega Man - Maverick Hunter X »
+fn strip_tags(s: &str) -> String {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\s*[\(\[][^\)\]]*[\)\]]").unwrap());
+    let t = RE.replace_all(s, "").trim().to_string();
+    if t.is_empty() {
+        s.trim().to_string()
+    } else {
+        t
+    }
+}
+
 #[tauri::command]
 fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
     let split = state.cfg().split_anime;
@@ -713,8 +724,7 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
                 if let Some(m) = emu::detect(&d.final_path()) {
                     let stem = d.final_path().file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
                     // « Mega Man - Maverick Hunter X (Europe) » → « Mega Man - Maverick Hunter X »
-                    let title = regex::Regex::new(r"s*[([][^)]]*[)]]").unwrap().replace_all(&stem.replace('_', " "), "").trim().to_string();
-                    direct.set_game(&d.id, if title.is_empty() { &stem } else { &title }, emu::platform_of(m.id));
+                    direct.set_game(&d.id, &strip_tags(&stem.replace('_', " ")), emu::platform_of(m.id));
                 }
             }
         });
@@ -741,8 +751,8 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
             // Jeu d'un site de ROM : son vrai titre (pas le nom du .zip), donc la bonne jaquette
             if !d.game.is_empty() && (d.kind.is_empty() || d.kind == "game") {
                 m.kind = Kind::Game;
-                m.title = d.game.clone();
-                m.group_key = format!("game:{}", media::normalize(&d.game));
+                m.title = strip_tags(&d.game);
+                m.group_key = format!("game:{}", media::normalize(&m.title));
             }
             // Type choisi à la main
             if let Some(k) = Kind::parse(&d.kind) {
@@ -2022,8 +2032,15 @@ fn dl_set_kind(state: State<'_, AppState>, id: String, kind: String) {
 async fn dl_extract(state: State<'_, AppState>, id: String) -> Result<emu::Rom, String> {
     let d = state.direct.get(&id).ok_or("Téléchargement introuvable")?;
     let path = d.final_path();
+    let zip = path.clone();
     let rom = tokio::task::spawn_blocking(move || emu::unpack(&path)).await.map_err(|e| e.to_string())??;
-    state.direct.set_rom(&id, &rom.display().to_string());
+    // L'archive ne sert plus : à la corbeille (récupérable), et le téléchargement pointe sur le dossier extrait
+    let folder = zip.with_extension("");
+    if zip.is_file() && folder.is_dir() && trash::delete(&zip).is_ok() {
+        state.direct.set_extracted(&id, &rom.display().to_string(), &folder.file_name().unwrap_or_default().to_string_lossy());
+    } else {
+        state.direct.set_rom(&id, &rom.display().to_string());
+    }
     Ok(emu::rom_info(&rom))
 }
 
