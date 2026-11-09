@@ -162,6 +162,7 @@
 <style>
   .card {
     position: relative;
+    top: 0;
     display: flex;
     flex-direction: column;
     border-radius: var(--r);
@@ -169,12 +170,14 @@
     border: 1px solid var(--line);
     box-shadow: var(--shadow-sm);
     cursor: pointer;
-    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    /* La carte monte avec « top » et non « transform » : un transform ferait passer les cartes
+       empilées derrière (séries) par-dessus la carte */
+    transition: top 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     outline: none;
   }
   .card:hover,
   .card:focus-visible {
-    transform: translateY(-3px);
+    top: -3px;
     border-color: hsl(var(--h) 70% 55% / 0.5);
     box-shadow: 0 18px 40px -18px hsl(var(--h) 70% 35% / 0.55);
   }
