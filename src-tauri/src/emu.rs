@@ -35,6 +35,7 @@ pub const EMUS: &[Emu] = &[
     Emu { id: "melonds", name: "melonDS", consoles: "Nintendo DS", exts: &["nds", "dsi", "srl"], src: Src::Github("melonDS-emu/melonDS", r"windows-x86_64\.zip$"), exe: "melonds", page: "https://melonds.kuribo64.net", needs: "" },
     Emu { id: "mgba", name: "mGBA", consoles: "Game Boy, Game Boy Color, GBA", exts: &["gba", "gb", "gbc", "sgb"], src: Src::Github("mgba-emu/mgba", r"win64\.7z$"), exe: "mgba", page: "https://mgba.io", needs: "" },
     Emu { id: "azahar", name: "Azahar", consoles: "Nintendo 3DS", exts: &["3ds", "cci", "cia", "cxi", "3dsx", "z3dsx", "zcci", "zcia"], src: Src::Github("azahar-emu/azahar", r"^azahar-windows-msvc-[\d.]+\.zip$"), exe: "azahar", page: "https://azahar-emu.org", needs: "Les jeux doivent être déchiffrés (ROM « decrypted »)." },
+    Emu { id: "rmg", name: "RMG", consoles: "Nintendo 64", exts: &["z64", "n64", "v64"], src: Src::Github("Rosalie241/RMG", r"^RMG-Portable-Windows64-v[\d.]+\.zip$"), exe: "rmg", page: "https://github.com/Rosalie241/RMG", needs: "" },
     Emu { id: "duckstation", name: "DuckStation", consoles: "PlayStation 1", exts: &["ecm", "mds", "psexe", "psf"], src: Src::Github("stenzek/duckstation", r"windows-x64-release\.zip$"), exe: "duckstation-qt", page: "https://www.duckstation.org", needs: "Un BIOS PS1 est nécessaire : DuckStation te le demande au premier lancement." },
     Emu { id: "pcsx2", name: "PCSX2", consoles: "PlayStation 2", exts: &[], src: Src::Github("PCSX2/pcsx2", r"windows-x64-Qt\.7z$"), exe: "pcsx2-qt", page: "https://pcsx2.net", needs: "Un BIOS PS2 est nécessaire : PCSX2 te le demande au premier lancement." },
     Emu { id: "ppsspp", name: "PPSSPP", consoles: "PSP", exts: &["cso", "prx"], src: Src::Github("hrydgard/ppsspp", r"Windows-x64\.zip$"), exe: "ppssppwindows64", page: "https://www.ppsspp.org", needs: "" },
@@ -43,7 +44,7 @@ pub const EMUS: &[Emu] = &[
 ];
 
 /// Ouvertes par OneForAll par défaut (double-clic)
-pub const ASSOC_DEFAULT: &[&str] = &["nds", "dsi", "gba", "gb", "gbc", "3ds", "cci", "cia", "cxi", "3dsx", "cso", "chd", "pbp", "rvz", "gcz", "wbfs", "wia", "nsp", "xci", "nsz", "xcz"];
+pub const ASSOC_DEFAULT: &[&str] = &["nds", "dsi", "gba", "gb", "gbc", "3ds", "cci", "cia", "cxi", "3dsx", "cso", "chd", "pbp", "rvz", "gcz", "wbfs", "wia", "nsp", "xci", "nsz", "xcz", "z64", "n64", "v64"];
 /// Seulement proposées dans « Ouvrir avec » (trop génériques pour les prendre par défaut)
 pub const ASSOC_OPEN_WITH: &[&str] = &["iso", "cue", "bin"];
 const AMBIGUOUS: &[&str] = &["iso", "cue", "bin", "chd", "pbp", "img"];
@@ -59,6 +60,7 @@ pub fn platform_of(id: &str) -> &'static str {
         "ppsspp" => "PSP",
         "dolphin" => "GameCube",
         "ryujinx" => "Switch",
+        "rmg" => "Nintendo 64",
         _ => "",
     }
 }

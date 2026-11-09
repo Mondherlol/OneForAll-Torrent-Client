@@ -75,6 +75,10 @@ fn cartridge_ok(p: &Path) -> bool {
         "gb" | "gbc" | "sgb" => (0x104, &[0xCE, 0xED, 0x66, 0x66]),
         "gba" => (0xB2, &[0x96]),
         "nds" | "dsi" | "srl" => (0x15C, &[0x56, 0xCF]),
+        // N64 : premier octet selon l'ordre des octets (.z64 / .v64 / .n64)
+        "z64" => (0, &[0x80]),
+        "v64" => (0, &[0x37]),
+        "n64" => (0, &[0x40]),
         _ => return true,
     };
     let mut buf = vec![0u8; at + want.len()];

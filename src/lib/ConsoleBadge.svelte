@@ -51,7 +51,7 @@
     ps3: { label: "PS3", color: "#2e6cff", shape: "disc" },
     ps4: { label: "PS4", color: "#2e6cff", shape: "disc" },
     gc: { label: "GameCube", color: "#7c3aed", shape: "disc" },
-    n64: { label: "N64", color: "#16a34a", shape: "pad" },
+    n64: { label: "N64", color: "#e60012", shape: "n64" },
     snes: { label: "SNES", color: "#8b5cf6", shape: "pad" },
     nes: { label: "NES", color: "#dc2626", shape: "pad" },
     md: { label: "Mega Drive", color: "#111827", shape: "pad" },
@@ -63,7 +63,7 @@
 
 {#if c.shape === "psp"}
   <!-- PSP : le logo seul (lettres à traits fins), sans texte -->
-  <span class="cb logo" class:small title={platform || "PSP"}>
+  <span class="cb logo" class:small style="--c:#3b7bff" title={platform || "PSP"}>
     <svg viewBox="-1 -1 62 20" width={small ? 34 : 43} height={small ? 11 : 14} aria-label="PSP">
       <path d="M1 17.5V1h14v8.5H4.5M38 1H22v8.5h16v8H22M45 17.5V1h14v8.5H48.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="miter" />
     </svg>
@@ -106,9 +106,18 @@
       <rect x="8" y="2" width="8" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
       <path d="M10.5 6.5h3M12 5v3" stroke="var(--c)" stroke-width="1.6" />
       <circle cx="12" cy="11.5" r="1.4" fill="var(--c)" />
+    {:else if c.shape === "n64"}
+      <!-- N64 : le « N » en trois couleurs -->
+      <path d="M3 4h4.6v16H3Z" fill="#1f5fd6" />
+      <path d="M3 4h4.6l13.4 16h-4.6Z" fill="#e60012" />
+      <path d="M16.4 4H21v16h-4.6Z" fill="#14a347" />
+      <path d="M16.4 4H21l-4.6 5.5Z" fill="#ffc400" />
     {:else if c.shape === "pad"}
-      <rect x="1.5" y="5" width="21" height="14" rx="4" fill="none" stroke="currentColor" stroke-width="1.8" />
-      <rect x="7" y="7.5" width="10" height="9" rx="0.6" fill="var(--c)" />
+      <!-- Manette rétro, couleur de la console -->
+      <path d="M7 6h10a5.5 5.5 0 0 1 0 11.5h-1.6L13.8 15h-3.6l-1.6 2.5H7A5.5 5.5 0 0 1 7 6Z" fill="var(--c)" />
+      <path d="M4.6 11.8h3.6M6.4 10v3.6" stroke="#fff" stroke-width="1.4" stroke-linecap="round" />
+      <circle cx="16.4" cy="12.9" r="1.15" fill="#fff" />
+      <circle cx="18.7" cy="10.7" r="1.15" fill="#fff" />
     {:else}
       <!-- Disque -->
       <circle cx="12" cy="12" r="9.5" fill="none" stroke="currentColor" stroke-width="1.8" />
@@ -138,7 +147,18 @@
   .cb svg { flex: none; }
   .cb.logo { padding: 0 11px; background: linear-gradient(135deg, #0b1d4a, #050b1f); border-color: rgb(120 160 255 / 0.35); }
   .cb.logo.small { padding: 0 8px; }
-  .cb.small { height: 20px; padding: 0 7px 0 4px; gap: 4px; box-shadow: none; background: #1b1f2a; }
+  /* Petit badge (listes) : pastille claire teintée de la couleur de la console */
+  .cb.small {
+    height: 20px;
+    padding: 0 7px 0 4px;
+    gap: 4px;
+    box-shadow: none;
+    backdrop-filter: none;
+    background: color-mix(in srgb, var(--c) 13%, var(--surface));
+    border-color: color-mix(in srgb, var(--c) 38%, transparent);
+    color: color-mix(in srgb, var(--c) 55%, var(--text));
+  }
+  .cb.logo.small { background: color-mix(in srgb, var(--c) 13%, var(--surface)); color: color-mix(in srgb, var(--c) 70%, var(--text)); }
   .cb.small b { font-size: 10.5px; }
   .cb b { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
 </style>

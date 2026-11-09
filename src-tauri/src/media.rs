@@ -129,7 +129,7 @@ static RE_CUT: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static RE_BOOK: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?i)\.(cbz|cbr|epub|mobi|azw3|pdf)$|\b(manga|comics?|ebook|scans?)\b"));
+    LazyLock::new(|| re(r"(?i)\.(cbz|cbr|epub|mobi|azw3|pdf)$|\b(manga|comics?|ebook|scans?)\b|[\[(.\s](cbz|cbr|epub|mobi|azw3)[\]).\s-]"));
 static RE_AUDIO: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)\.(mp3|flac|m4a|m4b|ogg|wav)$|\b(mp3|flac|\d{3}\s?kbps|album|discography|discographie|audiobook|livre audio|ost)\b")
 });
@@ -430,6 +430,7 @@ mod tests {
         assert_eq!(m("Blue Prince (v1.06.1)-ElAmigos", "Jeux").title, "Blue Prince");
         assert_eq!(m("Adobe Illustrator 2026 (v30.8.2) Multilingual", "Jeux").kind, Kind::Software);
         assert_eq!(m("Look Back.cbz", "Films").kind, Kind::Book);
+        assert_eq!(m("Basilisk.T04.Masaki.Segawa.Futaroh.Yamada.FR.[CBZ]-NoTag", "").kind, Kind::Book);
         assert_eq!(m("Sherlock.Holmes.integrale.2007.FR.MP3.[128kbps]", "").kind, Kind::Audio);
         assert_eq!(m("Black.Clover.iNTEGRALE.MULTi.1080p.BluRay.x264-AMB3R", "").title, "Black Clover");
         let ac = m("Animal Crossing New Horizons [01006F8002326800] [v2097152].nsp", "");

@@ -522,7 +522,14 @@ impl Artwork {
                 Some(a) => Some(a),
                 None => self.steam(q).await?,
             },
-            "book" => self.anilist(q, "MANGA").await?,
+            // iTunes livres FR (titre + auteurs, tome), sinon AniList (mangas) avec le titre sans le tome
+            "book" => match self.book(q).await? {
+                Some(a) => Some(a),
+                None => {
+                    let base = regex::Regex::new(r"(?i)\s*\b(?:t|tome|vol|volume)\.?\s*\d{1,3}\b.*$").unwrap().replace(q, "").to_string();
+                    self.anilist(if base.trim().is_empty() { q } else { base.trim() }, "MANGA").await?
+                }
+            },
             "audio" => self.itunes(q, "audiobook", "600x600bb").await?,
             _ => None,
         })
@@ -685,6 +692,47 @@ impl Artwork {
             Some(if anime { art.kind("anime") } else { art })
         });
         Ok(hit)
+    }
+
+    /// Livre (BD, manga, roman) : boutique iTunes France, qui comprend titre + auteurs
+    /// (« Basilisk T04 Masaki Segawa » → « Basilisk - tome 04 »). Le bon tome si on le trouve.
+    async fn book(&self, q: &str) -> Result<Option<Art>, reqwest::Error> {
+        static VOL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\s*\b(?:t|tome|vol|volume)\.?\s*0*(\d{1,3})\b").unwrap());
+        let norm = |s: &str| fold(&s.to_lowercase()).chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+        let num = VOL.captures(q).map(|c| c[1].to_string());
+        let base = VOL.find(q).map(|m| q[..m.start()].trim()).filter(|b| !b.is_empty()).unwrap_or(q);
+        let term = VOL.replace(q, " ").to_string();
+        // Titre + auteurs d'abord ; rien (auteur orthographié autrement…) : le titre seul
+        let mut terms = vec![term.trim().to_string()];
+        if base != q {
+            terms.push(base.to_string());
+        }
+        let fq = norm(q);
+        let mut hits: Vec<(String, Art)> = Vec::new();
+        for term in terms {
+        let v = self.json(self.client.get("https://itunes.apple.com/search").query(&[("term", term.as_str()), ("limit", "25"), ("country", "FR"), ("media", "ebook")])).await?;
+        hits = v["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let name = r["trackName"].as_str()?;
+                let img = r["artworkUrl100"].as_str()?;
+                let head = norm(name.split(" - ").next().unwrap_or(name));
+                // Le titre trouvé doit être celui cherché (ou le début de la recherche, suivie des auteurs)
+                let ok = similar(base, name.split(" - ").next().unwrap_or(name)) || (head.len() >= 4 && (fq == head || fq.starts_with(&format!("{head} "))));
+                ok.then(|| (norm(name), Art::new(img.replace("100x100bb", "600x900bb")).fallback(img)))
+            })
+            .collect();
+        if !hits.is_empty() {
+            break;
+        }
+        }
+        // Le tome demandé s'il est là, sinon le premier
+        let pick = num
+            .and_then(|n| hits.iter().position(|(name, _)| name.split(' ').any(|w| w.trim_start_matches('0') == n)))
+            .unwrap_or(0);
+        Ok(hits.into_iter().nth(pick).map(|(_, a)| a))
     }
 
     async fn itunes(&self, q: &str, media: &str, size: &str) -> Result<Option<Art>, reqwest::Error> {
@@ -892,5 +940,20 @@ mod tests {
         assert!(similar("Black Clover", "Black Clover"));
         assert!(!similar("Kenichi", "Kenshi"));
         assert_eq!(query_of("Adieu Eri (Fujimoto)"), "Adieu Eri");
+    }
+}
+
+#[cfg(test)]
+mod book_tests {
+    /// `cargo test live_book -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn live_book() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let a = super::Artwork::new();
+        for q in ["Basilisk T04 Masaki Segawa Futaroh Yamada", "Miroirs Kaiu Shirai Posuka Demizu", "Basilisk T01 Masaki Segawa Futaroh Yamada", "One Piece Tome 105", "Pleasure Island Takamura Chinatsu Hazuki Kaoru"] {
+            let r = rt.block_on(a.book(q)).unwrap();
+            println!("{q} → {:?}", r.map(|x| x.url));
+        }
     }
 }
