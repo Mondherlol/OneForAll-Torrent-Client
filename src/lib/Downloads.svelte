@@ -7,6 +7,8 @@
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, openStudio, wantArt } from "./ui.svelte.js";
+  import { emuDetect } from "./api.js";
+  import { emuById, play } from "./emu.svelte.js";
 
   /** downloads : liste de get_downloads ; onrefresh : recharge la liste tout de suite ; prefill : lien collé dans la recherche */
   let { downloads, onrefresh, prefill = null } = $props();
@@ -100,6 +102,17 @@
   }
 
   let compressing = $state(null);
+  // ROM téléchargée (.nds, .gba… ou .zip / .7z qui en contient une) → bouton « Jouer »
+  const ROMISH = /\.(zip|7z|nds|dsi|gba|gbc?|3ds|cia|cci|cso|chd|pbp|iso|cue|rvz|wbfs|gcz|nsp|xci)$/i;
+  let roms = $state({}); // chemin → ROM détectée (null = pas un jeu)
+  $effect(() => {
+    for (const d of downloads) {
+      if (d.st !== "done" || !d.path || !ROMISH.test(d.name) || d.path in roms) continue;
+      roms[d.path] = null;
+      emuDetect(d.path).then((r) => (roms[d.path] = r.emu ? r : null)).catch(() => {});
+    }
+  });
+
   const isVideoFile = (d) => d.st === "done" && /\.(mp4|mkv|webm|mov|avi|m4v)$/i.test(d.name);
 
   // Télécharger : vidéos des sites → fenêtre d'options (qualité, MP3, passage) ; fichiers et Spotify → direct
@@ -282,6 +295,8 @@
               <button class="ib hot" title="Reprendre" onclick={() => act([d], "resume")}><Icon name="play" size={15} /></button>
             {:else if d.st === "error"}
               <button class="ib" title="Réessayer" onclick={() => act([d], "resume")}><Icon name="refresh" size={15} /></button>
+            {:else if roms[d.path]}
+              <button class="ib hot" title="Jouer avec {emuById(roms[d.path].emu)?.name ?? 'l\'émulateur'}" onclick={() => play(roms[d.path])}><Icon name="game" size={15} /></button>
             {:else}
               <button class="ib" title="Ouvrir" onclick={() => openItem(d)}><Icon name="open" size={15} /></button>
             {/if}

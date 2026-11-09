@@ -29,6 +29,10 @@ pub struct SearchResult {
     pub lang: String,
     #[serde(skip)]
     pub category_id: String,
+    /// Jaquette fournie par le site (sites de ROM)
+    pub thumb: String,
+    /// Console (sites de ROM) : « Nintendo DS »
+    pub platform: String,
 }
 
 static RE_FR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(vostfr|vf|vff|vf2|vfq|vfi|french|truefrench|subfrench|multi|fr)\b").unwrap());
@@ -42,7 +46,7 @@ pub fn enrich(mut r: SearchResult) -> SearchResult {
     r.kind = m.kind.as_str().to_string();
     r.art_key = m.group_key.clone();
     r.year = m.year;
-    if matches!(r.source, "online-fix" | "fitgirl" | "nxbrew") {
+    if matches!(r.source, "online-fix" | "fitgirl" | "nxbrew" | "romsfun" | "wowroms") {
         // Sites qui ne publient que des jeux
         let mut m = m;
         m.set_kind(crate::media::Kind::Game);
@@ -126,6 +130,8 @@ pub async fn nyaa(client: &Client, query: &str) -> Result<Vec<SearchResult>, Str
                 year: None,
                 lang: String::new(),
                 category_id: tag(b, "nyaa:categoryId"),
+                thumb: String::new(),
+                platform: String::new(),
             }
         })
         .filter(|r| !r.url.is_empty())
@@ -234,6 +240,8 @@ async fn torznab_once(client: &Client, base: &str, key: &str, mut params: Vec<(&
                 year: None,
                 lang: String::new(),
                 category_id: String::new(),
+                thumb: String::new(),
+                platform: String::new(),
             }
         })
         .filter(|r| !r.url.is_empty())
@@ -263,6 +271,8 @@ fn blank(source: &'static str) -> SearchResult {
         year: None,
         lang: String::new(),
         category_id: String::new(),
+        thumb: String::new(),
+        platform: String::new(),
     }
 }
 
@@ -555,6 +565,8 @@ async fn online_fix_game(client: &Client, page: String, title: String) -> Vec<Se
             year: None,
             lang: String::new(),
             category_id: String::new(),
+            thumb: String::new(),
+            platform: String::new(),
         });
         // Titre propre du site pour l'affiche, nom du fichier pour la version
         out.push(SearchResult { title: name, ..r });
@@ -623,5 +635,175 @@ mod tests {
         assert_eq!(tag(b, "title"), "[X] Black Clover & co \"1\"");
         assert_eq!(tag(b, "nyaa:seeders"), "26");
         assert_eq!(parse_size("1.5 MiB"), 1572864);
+    }
+}
+
+// ---------- sites de ROM ----------
+
+static RE_RF_CARD_HREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"href="(https://romsfun\.com/roms/[^"]+\.html)""#).unwrap());
+static RE_IMG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"<img[^>]*?(?:data-src|src)="([^"]+)"[^>]*?alt="([^"]*)""#).unwrap());
+static RE_H3_A: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<h3[^>]*>\s*<a[^>]*>(.*?)</a>").unwrap());
+static RE_RF_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([\d.]+)\s*([KMGT])B?\s*</span>").unwrap());
+
+fn short_size(n: &str, unit: &str) -> i64 {
+    parse_size(&format!("{n} {unit}B"))
+}
+
+/// RomsFun : page de recherche WordPress, une carte par jeu (jaquette, console, taille).
+pub async fn romsfun(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let html = client
+        .get("https://romsfun.com/")
+        .query(&[("s", query)])
+        .send()
+        .await
+        .map_err(|e| format!("RomsFun injoignable : {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(romsfun_parse(&html))
+}
+
+pub fn romsfun_parse(html: &str) -> Vec<SearchResult> {
+    let mut out = Vec::new();
+    for card in html.split(r#"<div class="bg-white rounded-xl p-3 flex gap-4"#).skip(1) {
+        let Some(page) = RE_RF_CARD_HREF.captures(card).map(|c| c[1].to_string()) else { continue };
+        let Some(title) = RE_H3_A.captures(card).map(|c| strip_tags(&c[1])) else { continue };
+        let imgs: Vec<(String, String)> = RE_IMG.captures_iter(card).map(|c| (c[1].to_string(), decode(&c[2]))).collect();
+        let mut r = blank("romsfun");
+        r.title = title.clone();
+        r.url = page.clone();
+        r.page = page;
+        r.thumb = imgs.first().map(|i| i.0.clone()).unwrap_or_default();
+        r.platform = imgs.get(1).map(|i| i.1.clone()).unwrap_or_default();
+        r.size = RE_RF_SIZE.captures_iter(card).last().map(|c| short_size(&c[1], &c[2])).unwrap_or(0);
+        out.push(enrich_game(r, &title));
+    }
+    out
+}
+
+#[derive(Serialize, Debug)]
+pub struct RomVersion {
+    pub label: String,
+    pub size: i64,
+    /// Page de téléchargement de cette version
+    pub page: String,
+}
+
+static RE_RF_DL_LIST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"href="(https://romsfun\.com/download/[a-z0-9-]+)""#).unwrap());
+static RE_TR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>").unwrap());
+static RE_RF_VER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)href="(https://romsfun\.com/download/[a-z0-9-]+/\d+)"[^>]*>(.*?)</a>"#).unwrap());
+static RE_RF_TD_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([\d.]+)\s*([KMGT])B?\s*</td>").unwrap());
+
+async fn get_html(client: &Client, url: &str) -> Result<String, String> {
+    let res = client.get(url).send().await.map_err(|e| format!("Site injoignable : {e}"))?;
+    if !res.status().is_success() {
+        return Err(format!("Le site a répondu {}", res.status()));
+    }
+    res.text().await.map_err(|e| e.to_string())
+}
+
+/// Versions d'un jeu RomsFun (Europe, USA…) : page du jeu → page « Download » → tableau.
+pub async fn romsfun_versions(client: &Client, page: &str) -> Result<Vec<RomVersion>, String> {
+    let html = get_html(client, page).await?;
+    let list = RE_RF_DL_LIST.captures(&html).map(|c| c[1].to_string()).ok_or("Pas de lien de téléchargement sur cette page")?;
+    let html = get_html(client, &list).await?;
+    let out: Vec<RomVersion> = RE_TR
+        .captures_iter(&html)
+        .filter_map(|tr| {
+            let row = &tr[1];
+            let v = RE_RF_VER.captures(row)?;
+            Some(RomVersion {
+                page: v[1].to_string(),
+                label: strip_tags(&v[2]),
+                size: RE_RF_TD_SIZE.captures(row).map(|c| short_size(&c[1], &c[2])).unwrap_or(0),
+            })
+        })
+        .collect();
+    if out.is_empty() {
+        return Err("Aucune version trouvée sur RomsFun".into());
+    }
+    Ok(out)
+}
+
+/// Lien direct (signé, valable peu de temps) d'une version. Comme le site : la page de la version
+/// demande son lien à admin-ajax.php (la page elle-même est en cache, son lien est souvent périmé).
+pub async fn romsfun_link(client: &Client, page: &str) -> Result<String, String> {
+    let res = client
+        .post("https://romsfun.com/wp-admin/admin-ajax.php")
+        .header("Referer", page)
+        .header("X-Requested-With", "XMLHttpRequest")
+        .form(&[("action", "k_get_download")])
+        .send()
+        .await
+        .map_err(|e| format!("RomsFun injoignable : {e}"))?;
+    let v: serde_json::Value = res.json().await.map_err(|e| format!("Réponse illisible de RomsFun : {e}"))?;
+    if let Some(url) = v["data"]["download_url"].as_str().filter(|u| u.starts_with("http")) {
+        return Ok(url.to_string());
+    }
+    let msg = v["data"]["message"].as_str().unwrap_or("lien introuvable");
+    Err(format!("RomsFun : {msg} (limite de téléchargements du site atteinte ?)"))
+}
+
+static RE_WW_HREF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"href="(/fr/roms/[^"/]+/[^"/]+/\d+\.html)""#).unwrap());
+static RE_WW_ALPHA: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"data-alpha="([^"]*)""#).unwrap());
+static RE_WW_CONSOLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)class="col-title[^"]*"[^>]*>(.*?)</a>"#).unwrap());
+static RE_WW_IMG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"data-src="([^"]+)""#).unwrap());
+
+/// WowRoms : liste de recherche. Le téléchargement passe par un jeton calculé dans la page :
+/// on ouvre la page dans le navigateur (pas de contournement).
+pub async fn wowroms(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    let html = client
+        .get("https://wowroms.com/fr/roms/list")
+        .query(&[("search", query)])
+        .send()
+        .await
+        .map_err(|e| format!("WowRoms injoignable : {e}"))?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(wowroms_parse(&html))
+}
+
+pub fn wowroms_parse(html: &str) -> Vec<SearchResult> {
+    // Les résultats sont après le champ de recherche (avant : « Top téléchargement »)
+    let body = html.split("ulromlist").nth(1).unwrap_or("");
+    let mut out = Vec::new();
+    for el in body.split(r#"<li class="element"#).skip(1) {
+        let Some(href) = RE_WW_HREF.captures(el).map(|c| c[1].to_string()) else { continue };
+        let Some(title) = RE_WW_ALPHA.captures(el).map(|c| decode(&c[1])) else { continue };
+        let page = format!("https://wowroms.com{href}");
+        let mut r = blank("wowroms");
+        r.title = title.clone();
+        r.url = page.clone();
+        r.page = page;
+        r.thumb = RE_WW_IMG.captures(el).map(|c| c[1].to_string()).unwrap_or_default();
+        r.platform = RE_WW_CONSOLE.captures(el).map(|c| strip_tags(&c[1].replace("&nbsp;", " "))).unwrap_or_default();
+        out.push(enrich_game(r, title.split(" (").next().unwrap_or(&title)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod rom_live {
+    #[test]
+    #[ignore]
+    fn rom_sites() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let c = reqwest::Client::builder().user_agent("OneForAll/0.6").build().unwrap();
+            let rf = super::romsfun(&c, "time hollow").await.unwrap();
+            for r in rf.iter().take(4) {
+                println!("RF {} | {} | {} | {} | {} | {}", r.title, r.platform, r.size, r.kind, r.page, r.thumb);
+            }
+            let v = super::romsfun_versions(&c, &rf[0].page).await.unwrap();
+            for x in &v {
+                println!("  V {} | {} | {}", x.label, x.size, x.page);
+            }
+            println!("  LINK {}", super::romsfun_link(&c, &v[0].page).await.unwrap());
+            let ww = super::wowroms(&c, "time hollow").await.unwrap();
+            for r in ww.iter().take(4) {
+                println!("WW {} | {} | {} | {}", r.title, r.platform, r.page, r.thumb);
+            }
+        });
     }
 }

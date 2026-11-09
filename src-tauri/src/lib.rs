@@ -537,8 +537,31 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
         "online-fix" => search::online_fix(&client, query.trim()).await,
         "fitgirl" => search::fitgirl(&client, query.trim()).await,
         "nxbrew" => search::nxbrew(&client, query.trim()).await,
+        "romsfun" => search::romsfun(&client, query.trim()).await,
+        "wowroms" => search::wowroms(&client, query.trim()).await,
         _ => search::nyaa(&client, query.trim()).await,
     }
+}
+
+/// Versions d'un jeu RomsFun (Europe, USA…).
+#[tauri::command]
+async fn rom_versions(page: String) -> Result<Vec<search::RomVersion>, String> {
+    if !page.starts_with("https://romsfun.com/") {
+        return Err("Lien RomsFun invalide".into());
+    }
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    search::romsfun_versions(&client, &page).await
+}
+
+/// Ajoute une version RomsFun à l'onglet DL (lien direct de la page).
+#[tauri::command]
+async fn rom_download(state: State<'_, AppState>, page: String) -> Result<String, String> {
+    if !page.starts_with("https://romsfun.com/download/") {
+        return Err("Lien RomsFun invalide".into());
+    }
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let link = search::romsfun_link(&client, &page).await?;
+    Ok(state.direct.add(&link))
 }
 
 /// Liens d'hébergeurs d'une page NXBrew (jeu, mise à jour, DLC).
@@ -2099,6 +2122,8 @@ pub fn run() {
             emu_set_exe,
             emu_remove,
             emu_take_pending,
+            rom_versions,
+            rom_download,
             get_torrents,
             torrent_action,
             get_files,

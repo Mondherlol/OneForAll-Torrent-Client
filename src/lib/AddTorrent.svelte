@@ -3,13 +3,15 @@
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
-  import { nxbrewLinks, openUrl, previewTorrent, searchTorrents, stageTorrents } from "./api.js";
+  import { nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, stageTorrents } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
   import icoNyaa from "../assets/sources/nyaa.png";
   import icoOnlineFix from "../assets/sources/online-fix.ico";
   import icoFitgirl from "../assets/sources/fitgirl.ico";
   import icoNxbrew from "../assets/sources/nxbrew.png";
+  import icoRomsfun from "../assets/sources/romsfun.png";
+  import icoWowroms from "../assets/sources/wowroms.jpg";
 
   let { torrents, onclose, onadded, initial = null } = $props();
 
@@ -31,14 +33,16 @@
     "online-fix": { label: "Online-Fix", ico: icoOnlineFix, desc: "Jeux PC jouables en ligne" },
     fitgirl: { label: "FitGirl", ico: icoFitgirl, desc: "Repacks de jeux PC" },
     nxbrew: { label: "NXBrew", ico: icoNxbrew, desc: "Jeux Switch (liens d'hébergeurs)" },
+    romsfun: { label: "RomsFun", ico: icoRomsfun, desc: "ROM rétro (DS, GBA, PS1, PSP…) : téléchargement direct, jouables dans l'émulateur" },
+    wowroms: { label: "WowRoms", ico: icoWowroms, desc: "ROM rétro : le téléchargement se fait sur le site (s'ouvre dans le navigateur)" },
   };
   // Genre → sites où ça a du sens de chercher
   const GENRES = [
-    { id: "all", label: "Tout", icon: "all", sources: ["c411", "nyaa", "online-fix", "fitgirl", "nxbrew"] },
+    { id: "all", label: "Tout", icon: "all", sources: ["c411", "nyaa", "online-fix", "fitgirl", "romsfun", "wowroms", "nxbrew"] },
     { id: "film", label: "Films", icon: "film", sources: ["c411"] },
     { id: "series", label: "Séries", icon: "series", sources: ["c411"] },
     { id: "anime", label: "Animés", icon: "anime", sources: ["c411", "nyaa"] },
-    { id: "game", label: "Jeux", icon: "game", sources: ["online-fix", "fitgirl", "nxbrew", "c411"] },
+    { id: "game", label: "Jeux", icon: "game", sources: ["online-fix", "fitgirl", "romsfun", "wowroms", "nxbrew", "c411"] },
     { id: "software", label: "Logiciels", icon: "software", sources: ["c411"] },
     { id: "audio", label: "Musique", icon: "audio", sources: ["c411"] },
     { id: "book", label: "Livres", icon: "book", sources: ["c411", "nyaa"] },
@@ -127,7 +131,8 @@
 
   // Les torrents sont ajoutés sans démarrer ; l'app propose ensuite de choisir les fichiers (onadded)
   async function addOne(r) {
-    if (r.source === "nxbrew") return select(r);
+    if (r.source === "nxbrew" || r.source === "romsfun") return select(r);
+    if (r.source === "wowroms") return openUrl(r.page);
     try {
       const res = await stageTorrents([r.url]);
       if (res.hashes.length) added = new Set([...added, r.url]);
@@ -248,6 +253,7 @@
 
   // ---------- affiches (chargées quand la ligne devient visible) ----------
   function lazyArt(node, r) {
+    if (r.thumb) return;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) {
         wantArt({ artKey: r.art_key, kind: r.kind, title: r.clean || r.title, year: r.year });
@@ -261,12 +267,33 @@
   // ---------- aperçu ----------
   let selected = $state(null);
   let preview = $state(null);
+  let romAdded = $state(new Set());
+  async function getVersion(v) {
+    try {
+      const id = await romDownload(v.page);
+      romAdded = new Set([...romAdded, v.page]);
+      onadded({ hashes: [], errors: [], direct: [id] });
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+
   async function select(r) {
     selected = r;
     wantArt({ artKey: r.art_key, kind: r.kind, title: r.clean || r.title, year: r.year });
     preview = { loading: true };
     const url = r.url;
     try {
+      if (r.source === "romsfun") {
+        // Plusieurs versions (Europe, USA…) : téléchargement direct dans l'onglet DL
+        const versions = await romVersions(r.page);
+        if (selected?.url === url) preview = { versions };
+        return;
+      }
+      if (r.source === "wowroms") {
+        preview = { error: "WowRoms ne donne son lien qu'à un navigateur : clique sur « Voir sur le site » pour télécharger. Le fichier se lance ensuite dans le bon émulateur (double-clic, ou + → Fichier)." };
+        return;
+      }
       if (r.source === "nxbrew") {
         // Pas de .torrent : liens d'hébergeurs (via ouo.io) par partie du jeu
         const nx = await nxbrewLinks(r.page);
@@ -389,13 +416,14 @@
               <li class:sel={selected?.url === r.url} use:lazyArt={r}>
                 <button class="row" onclick={() => select(r)}>
                   <span class="thumb k-{r.kind}">
-                    {#if art?.url}<img src={art.url} alt="" loading="lazy" />{:else}<Icon name={r.kind} size={18} />{/if}
+                    {#if r.thumb || art?.url}<img src={r.thumb || art.url} alt="" loading="lazy" />{:else}<Icon name={r.kind} size={18} />{/if}
                   </span>
                   <span class="rbody">
                     <span class="rtitle" title={r.title}>{#if r.trusted}<i class="trusted" title="Uploader de confiance"></i>{/if}{r.title}</span>
                     <span class="rmeta">
                       {#if SOURCES[r.source]}<span class="rsrc" title={SOURCES[r.source].label}>{@render sico(r.source)}</span>{/if}
                       <span class="kb k-{r.kind}">{KIND_LABEL[r.kind] ?? "Autre"}</span>
+                      {#if r.platform}<span class="lb plat">{r.platform}</span>{/if}
                       {#if r.lang}<span class="lb">{r.lang.toUpperCase()}</span>{/if}
                       {#if sameTeam(r)}<span class="team" title="Même équipe que ton dernier épisode">★ {prefer}</span>{/if}
                       {#if r.seeders >= 0}<b class="seed" class:dead={r.seeders === 0}>↑ {r.seeders}</b>
@@ -408,7 +436,7 @@
                 {#if already}
                   <span class="done" title="Déjà ajouté"><Icon name="check" size={15} /></span>
                 {:else}
-                  <button class="dl" title="Télécharger" onclick={() => addOne(r)}><Icon name="down" size={15} /></button>
+                  <button class="dl" title={r.source === "wowroms" ? "Ouvrir sur WowRoms" : r.source === "romsfun" ? "Choisir la version" : "Télécharger"} onclick={() => addOne(r)}><Icon name={r.source === "wowroms" ? "open" : "down"} size={15} /></button>
                 {/if}
               </li>
             {/each}
@@ -440,7 +468,7 @@
         {@const already = have.has(selected.hash) || added.has(selected.url)}
         <aside class="preview" transition:fly={{ x: 20, duration: 160 }}>
           <div class="pv-head">
-            {#if art?.url}<img class="pv-poster" src={art.url} alt="" />{:else}<span class="pv-poster ph"><Icon name={selected.kind} size={28} /></span>{/if}
+            {#if selected.thumb || art?.url}<img class="pv-poster" src={selected.thumb || art.url} alt="" />{:else}<span class="pv-poster ph"><Icon name={selected.kind} size={28} /></span>{/if}
             <div class="pv-ht">
               <span class="kb k-{selected.kind}">{KIND_LABEL[selected.kind] ?? "Autre"}{selected.year ? ` · ${selected.year}` : ""}</span>
               <h3>{selected.clean || selected.title}</h3>
@@ -459,6 +487,18 @@
               <ul class="skel small">{#each Array(5) as _, i}<li style="--d:{i * 60}ms"><span class="sk-lines"><i></i></span></li>{/each}</ul>
             {:else if preview?.error}
               <p class="hint">{preview.error}</p>
+            {:else if preview?.versions}
+              <p class="nx-note">Choisis une version : elle part dans l'onglet <b>DL</b>, puis « Jouer » la lance dans le bon émulateur.</p>
+              <h4>{preview.versions.length} version{preview.versions.length > 1 ? "s" : ""}</h4>
+              <ul>
+                {#each preview.versions as v}
+                  <li class="ver">
+                    <span class="fname" title={v.label}>{v.label}</span><span class="fsize">{fmtSize(v.size)}</span>
+                    {#if romAdded.has(v.page)}<span class="done"><Icon name="check" size={13} /></span>
+                    {:else}<button class="nx-link" onclick={() => getVersion(v)}><Icon name="down" size={12} /></button>{/if}
+                  </li>
+                {/each}
+              </ul>
             {:else if preview?.nx}
               {#if !preview.nx.length}
                 <p class="hint">Aucun lien trouvé sur la page — ouvre-la sur le site.</p>
@@ -490,7 +530,7 @@
             {#if selected.page}<button class="btn" onclick={() => openUrl(selected.page)}><Icon name="open" size={14} />Voir sur le site</button>{/if}
             {#if already}
               <span class="done big"><Icon name="check" size={15} />Déjà ajouté</span>
-            {:else if selected.source !== "nxbrew"}
+            {:else if !["nxbrew", "romsfun", "wowroms"].includes(selected.source)}
               <button class="btn primary" onclick={() => addOne(selected)}><Icon name="down" size={14} />Télécharger</button>
             {/if}
           </div>
@@ -608,6 +648,8 @@
   .kb.k-software { background: rgb(8 145 178 / 0.12); color: #0891b2; }
   .kb.k-book { background: rgb(161 98 7 / 0.12); color: #a16207; }
   .kb.k-audio { background: rgb(147 51 234 / 0.12); color: #9333ea; }
+  .lb.plat { border-color: rgb(22 163 74 / 0.35); color: #16a34a; }
+  .pv-files li.ver { align-items: center; }
   .lb { font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--text-2); }
   .seed { color: var(--ok); }
   .seed.dead { color: var(--err); }

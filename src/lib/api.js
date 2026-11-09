@@ -68,3 +68,5 @@ export const emuPlay = (path, id) => invoke("emu_play", { path, id });
 export const emuSetExe = (id, exe) => invoke("emu_set_exe", { id, exe });
 export const emuRemove = (id) => invoke("emu_remove", { id });
 export const emuTakePending = () => invoke("emu_take_pending");
+export const romVersions = (page) => invoke("rom_versions", { page });
+export const romDownload = (page) => invoke("rom_download", { page });

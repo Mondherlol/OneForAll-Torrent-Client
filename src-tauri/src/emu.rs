@@ -135,7 +135,57 @@ fn sniff_pbp(p: &Path) -> Option<&'static str> {
     Some(if has(&data, b"PSISOIMG") || has(&data, b"PSTITLEIMG") { "duckstation" } else { "ppsspp" })
 }
 
+// ---------- ROM dans une archive (.zip, .7z : RomsFun, WowRoms…) ----------
+
+fn tar() -> std::process::Command {
+    let exe = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe");
+    let mut c = std::process::Command::new(exe);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c
+}
+
+pub fn is_archive(p: &Path) -> bool {
+    matches!(ext(p).as_str(), "zip" | "7z")
+}
+
+/// Fichiers contenus dans l'archive
+fn archive_entries(p: &Path) -> Vec<String> {
+    tar().arg("-tf").arg(p).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect()).unwrap_or_default()
+}
+
+/// Émulateur d'une archive d'après les ROM qu'elle contient (sans la décompresser)
+fn detect_archive(p: &Path) -> Option<&'static Emu> {
+    let entries = archive_entries(p);
+    let exts: Vec<String> = entries.iter().map(|e| ext(Path::new(e))).collect();
+    if let Some(m) = exts.iter().find_map(|x| EMUS.iter().find(|m| m.exts.contains(&x.as_str()))) {
+        return Some(m);
+    }
+    // Disque PS1 en .cue/.bin : le cas le plus courant
+    exts.iter().any(|x| x == "cue").then(|| get("duckstation")).flatten()
+}
+
+/// Décompresse l'archive à côté d'elle (une seule fois) et renvoie la ROM à lancer.
+fn unpack(p: &Path) -> Result<PathBuf, String> {
+    let dir = p.with_extension("");
+    if !dir.is_dir() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let out = tar().arg("-xf").arg(p).arg("-C").arg(&dir).output().map_err(|e| format!("Décompression impossible : {e}"))?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(format!("Décompression impossible : {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+    }
+    find_roms(&dir).into_iter().map(|r| PathBuf::from(r.path)).next().ok_or_else(|| "Aucun jeu trouvé dans l'archive".into())
+}
+
 pub fn detect(p: &Path) -> Option<&'static Emu> {
+    if is_archive(p) {
+        return detect_archive(p);
+    }
     let e = ext(p);
     if let Some(m) = EMUS.iter().find(|m| m.exts.contains(&e.as_str())) {
         return Some(m);
@@ -305,17 +355,7 @@ pub async fn install(m: &'static Emu, note: impl Fn(u32, &str)) -> Result<Instal
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     // tar de Windows (libarchive) : .zip et .7z. On décompresse par-dessus (garde un éventuel mode portable).
     let (archive2, dir2) = (archive.clone(), dir.clone());
-    let out = tokio::task::spawn_blocking(move || {
-        let tar = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe");
-        let mut c = std::process::Command::new(tar);
-        c.arg("-xf").arg(&archive2).arg("-C").arg(&dir2);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.creation_flags(0x0800_0000);
-        }
-        c.output()
-    })
+    let out = tokio::task::spawn_blocking(move || tar().arg("-xf").arg(&archive2).arg("-C").arg(&dir2).output())
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| format!("Décompression impossible : {e}"))?;
@@ -329,8 +369,15 @@ pub async fn install(m: &'static Emu, note: impl Fn(u32, &str)) -> Result<Instal
     Ok(inst)
 }
 
-/// Lance le jeu dans l'émulateur.
+/// Lance le jeu dans l'émulateur (une archive est d'abord décompressée à côté).
 pub fn play(rom: &Path, exe: &Path) -> Result<(), String> {
+    let unpacked;
+    let rom = if is_archive(rom) {
+        unpacked = unpack(rom)?;
+        unpacked.as_path()
+    } else {
+        rom
+    };
     let mut c = std::process::Command::new(exe);
     c.arg(rom);
     if let Some(d) = exe.parent() {
@@ -367,7 +414,7 @@ pub fn find_roms(path: &Path) -> Vec<Rom> {
     let has_cue = files.iter().any(|p| ext(p) == "cue");
     let mut roms: Vec<Rom> = files
         .iter()
-        .filter(|p| is_rom(p) && !(has_cue && ext(p) == "bin"))
+        .filter(|p| (is_rom(p) && !(has_cue && ext(p) == "bin")) || (is_archive(p) && detect_archive(p).is_some()))
         // Les .bin/.img seuls sont trop génériques : gardés seulement s'ils ressemblent à un disque de jeu
         .filter(|p| !matches!(ext(p).as_str(), "bin" | "img") || detect(p).is_some())
         .map(|p| rom_info(p))
@@ -416,6 +463,21 @@ mod tests {
         assert_eq!(detect(Path::new("Metroid.rvz")).map(|m| m.id), Some("dolphin"));
         assert!(is_rom(Path::new("game.iso")));
         assert!(!is_rom(Path::new("movie.mkv")));
+    }
+
+    #[test]
+    fn roms_in_archives() {
+        let dir = std::env::temp_dir().join("oneforall-emu-zip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("Time Hollow (Europe).nds"), b"rom").unwrap();
+        let zip = dir.join("Time Hollow.zip");
+        assert!(tar().arg("-a").arg("-cf").arg(&zip).arg("-C").arg(dir.join("src")).arg(".").status().unwrap().success());
+        assert_eq!(detect(&zip).map(|m| m.id), Some("melonds"));
+        assert_eq!(find_roms(&dir).iter().filter(|r| r.name.ends_with(".zip")).count(), 1);
+        let rom = unpack(&zip).unwrap();
+        assert!(rom.ends_with("Time Hollow (Europe).nds"), "{rom:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
