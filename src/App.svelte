@@ -16,7 +16,8 @@
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
   import Studio from "./lib/Studio.svelte";
-  import { getDownloads } from "./lib/api.js";
+  import { getDownloads, emuDetect, downloadAction, dlExtract } from "./lib/api.js";
+  import { play as playGame } from "./lib/emu.svelte.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
 
@@ -85,6 +86,73 @@
     const id = setInterval(() => !document.hidden && refreshDownloads(), 1000);
     return () => clearInterval(id);
   });
+  // Jeux téléchargés hors torrent (sites de ROM, liens…) : en cartes sous ceux des torrents, onglet Jeux
+  const DL_ST = { running: "downloading", queued: "stalled", paused: "paused", done: "done", error: "error" };
+  const dlCards = $derived.by(() => {
+    if (prefs.kind !== "game") return [];
+    const q = query.trim().toLowerCase();
+    return downloads
+      .filter((d) => d.kind === "game" && (!q || d.title.toLowerCase().includes(q) || d.name.toLowerCase().includes(q)))
+      .map((d) => {
+        const status = DL_ST[d.st] ?? "done";
+        return {
+          key: `dl:${d.id}`,
+          dl: d,
+          artKey: d.art_key,
+          kind: d.kind,
+          title: d.title,
+          year: d.year,
+          seasons: [],
+          items: [{ hash: d.id, progress: d.progress, status, format: d.platform ? "rom" : "", platform: d.platform }],
+          progress: d.progress,
+          status,
+          size: d.size,
+          added_on: d.added_on,
+          completion_on: d.completion_on,
+          dlspeed: d.speed,
+          eta: d.eta,
+        };
+      })
+      .filter((g) => matchStatus(g.status, prefs.status))
+      .sort((a, b) => b.added_on - a.added_on);
+  });
+  async function dlPlay(d) {
+    if (d.st !== "done") return;
+    try {
+      const r = await emuDetect(d.rom || d.path);
+      if (r.emu) return playGame(r);
+      await openPath(d.path);
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  function dlCardAction(d) {
+    return (name) => {
+      if (name === "reveal") return reveal(d.path, d.dir).catch((e) => flash(String(e)));
+      if (name === "pause" || name === "resume") downloadAction([d.id], name).then(refreshDownloads).catch((e) => flash(String(e)));
+    };
+  }
+  async function dlExtractCard(d) {
+    try {
+      const rom = await dlExtract(d.id);
+      flash(`${rom.name} extrait · zip mis à la corbeille`);
+      refreshDownloads();
+    } catch (e) {
+      flash(String(e));
+    }
+  }
+  function dlCardMenu(e, g) {
+    const d = g.dl;
+    const zip = /\.(zip|7z)$/i.test(d.name);
+    openMenu(e, [
+      d.st === "done" && { label: "Jouer", icon: "play", run: () => dlPlay(d) },
+      d.st === "done" && zip && (d.rom ? { label: "Supprimer le zip (déjà extrait)", icon: "trash", run: () => dlExtractCard(d) } : { label: "Extraire le jeu", icon: "layers", run: () => dlExtractCard(d) }),
+      { label: "Choisir l'image…", icon: "image", run: () => pickArt(g) },
+      { label: "Ouvrir le dossier", icon: "folder", run: () => reveal(d.path, d.dir).catch((err) => flash(String(err))) },
+      "-",
+      { label: "Voir dans Téléchargements", icon: "download", run: () => (view = "downloads") },
+    ]);
+  }
   const dlActive = $derived(downloads.filter((d) => d.st === "running" || d.st === "queued" || d.st === "paused").length);
   let categories = $state([]);
   let disks = $state([]);
@@ -294,6 +362,10 @@
     const c = {};
     for (const t of searched) if (matchStatus(t.status, prefs.status)) c[t.kind] = (c[t.kind] ?? 0) + 1;
     c.all = Object.values(c).reduce((a, b) => a + b, 0);
+    // + les jeux téléchargés hors torrent (affichés dans l'onglet Jeux)
+    const q = query.trim().toLowerCase();
+    const games = downloads.filter((d) => d.kind === "game" && matchStatus(DL_ST[d.st] ?? "done", prefs.status) && (!q || d.title.toLowerCase().includes(q))).length;
+    if (games) c.game = (c.game ?? 0) + games;
     return c;
   });
   const statusCounts = $derived.by(() => {
@@ -838,7 +910,7 @@
           <small class="detail">{error}</small>
         {/if}
       </div>
-    {:else if loaded && !visible.length}
+    {:else if loaded && !visible.length && !dlCards.length}
       <div class="empty" in:fade>
         <Icon name="search" size={40} />
         <h2>Rien ici</h2>
@@ -846,6 +918,7 @@
         {#if webQuery}<button class="btn primary" onclick={() => searchWeb()}><Icon name="download" size={15} />Chercher « {webQuery} » pour le télécharger</button>{/if}
       </div>
     {:else}
+      {#if visible.length}
       <div class="grid">
         {#each visible as g, i (g.key)}
           <div class="cell" animate:flip={{ duration: 280 }}>
@@ -861,6 +934,23 @@
           </div>
         {/each}
       </div>
+      {/if}
+      {#if dlCards.length}
+        <section class="dlsec" in:fade>
+          <h3>
+            <span class="dlsec-ic"><Icon name="download" size={14} /></span>Téléchargés hors torrent
+            <span class="dlsec-n">{dlCards.length}</span>
+            <button class="dlsec-go" onclick={() => (view = "downloads")}>Voir l'onglet DL<Icon name="chevron" size={13} /></button>
+          </h3>
+          <div class="grid">
+            {#each dlCards as g (g.key)}
+              <div class="cell" animate:flip={{ duration: 280 }}>
+                <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => dlPlay(g.dl)} oncontext={(e) => dlCardMenu(e, g)} onaction={dlCardAction(g.dl)} />
+              </div>
+            {/each}
+          </div>
+        </section>
+      {/if}
     {/if}
   </main>
 </div>
@@ -1082,6 +1172,14 @@
   main { flex: 1; overflow-y: auto; padding: 16px var(--pad) 90px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr)); gap: var(--gap-y) var(--gap-x); padding-top: 10px; }
   .cell { isolation: isolate; }
+  .dlsec { margin-top: 26px; }
+  .dlsec:first-child { margin-top: 0; }
+  .dlsec h3 { display: flex; align-items: center; gap: 9px; margin: 0 0 4px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 15px; font-weight: 700; color: var(--text); }
+  .dlsec:first-child h3 { border-top: 0; padding-top: 10px; }
+  .dlsec-ic { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); }
+  .dlsec-n { padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); font-size: 12px; font-weight: 650; }
+  .dlsec-go { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
+  .dlsec-go:hover { background: var(--accent-soft); }
   .band { position: fixed; z-index: 30; border: 1.5px solid var(--accent); background: var(--accent-soft); border-radius: 4px; pointer-events: none; }
 
   .selbar {
