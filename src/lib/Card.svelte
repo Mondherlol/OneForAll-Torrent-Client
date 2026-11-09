@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import ConsoleBadge from "./ConsoleBadge.svelte";
   import { KIND_LABEL, PLAYABLE, STATUS_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
   import { arts, wantArt, schedules, wantSchedule, airTime, alignEpisodes } from "./ui.svelte.js";
 
@@ -142,6 +143,7 @@
     {#if installed}
       <div class="installed-band" title="Installé : {installed.name}"><Icon name="check" size={13} />Installé</div>
     {/if}
+    {#if format}<span class="console"><ConsoleBadge {format} platform={g.items.find((i) => i.platform)?.platform ?? ""} /></span>{/if}
     <div class="bar"><span style="width:{pct}%"></span></div>
   </div>
 
@@ -151,7 +153,6 @@
     <div class="row">
       <span class="tags">
         <span class="kind k-{g.kind}"><Icon name={g.kind} size={11} />{KIND_LABEL[g.kind]}</span>
-        {#if format}<span class="fmt" title={g.items[0].platform ?? ""}>{format}</span>{/if}
       </span>
       <span class="when">{when}</span>
     </div>
@@ -351,7 +352,7 @@
   .row { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 4px; }
   .kind { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 2px 6px 2px 5px; border-radius: 5px; background: var(--kc-bg); color: var(--kc); white-space: nowrap; }
   .tags { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
-  .fmt { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; padding: 2px 5px; border-radius: 5px; background: #e60012; color: white; white-space: nowrap; }
+  .console { position: absolute; right: 8px; bottom: 12px; }
   .inst { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 700; padding: 2px 6px 2px 5px; border-radius: 5px; background: var(--ok); color: white; white-space: nowrap; }
   .k-film { --kc: #e0457b; --kc-bg: rgb(224 69 123 / 0.12); }
   .k-series { --kc: #3b82f6; --kc-bg: rgb(59 130 246 / 0.12); }
