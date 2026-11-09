@@ -993,10 +993,10 @@ impl Direct {
         let _ = std::fs::create_dir_all(&tmp);
         self.update(id, |x| {
             x.dir = dir.clone();
-            x.note = if track.is_some() { "Recherche sur YouTube…".into() } else { "Analyse du lien…".into() };
+            x.note = if track.is_some() { "Recherche sur YouTube Music…".into() } else { "Analyse du lien…".into() };
         });
 
-        let search = track.as_ref().map(|(n, _)| format!("ytsearch5:{n}"));
+        let search = track.as_ref().map(|(n, _)| crate::ytdl::music_search(n));
         let job = crate::ytdl::Job {
             url: search.as_deref().unwrap_or(&d.url),
             fmt: if track.is_some() { "mp3" } else { &d.media },

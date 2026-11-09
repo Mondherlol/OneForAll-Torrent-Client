@@ -224,8 +224,8 @@ pub fn args(j: &Job) -> Vec<String> {
         a.extend(["--download-sections".into(), format!("*{s}-{e}"), "--force-keyframes-at-cuts".into()]);
     }
     if let Some((_, secs)) = j.track {
-        // Recherche YouTube : le premier résultat dont la durée colle au morceau
-        a.extend(["--max-downloads".into(), "1".into()]);
+        // Recherche : le premier résultat dont la durée colle au morceau
+        a.extend(["--max-downloads".into(), "1".into(), "--playlist-end".into(), "5".into()]);
         if secs > 0 {
             a.extend(["--match-filter".into(), format!("duration>{} & duration<{}", secs.saturating_sub(15), secs + 15)]);
         }
@@ -250,7 +250,17 @@ pub fn args(j: &Job) -> Vec<String> {
     a.push("download:OFA %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s".into());
     a.push("--".into());
     a.push(url.into());
+    // Morceau Spotify : YouTube Music (pistes officielles des albums) d'abord, YouTube en secours
+    if let Some((n, _)) = j.track {
+        a.push(format!("ytsearch5:{n}"));
+    }
     a
+}
+
+/// Recherche d'un morceau sur YouTube Music, section « Titres » (audio officiel, pas de clip ni de live)
+pub fn music_search(name: &str) -> String {
+    let q: String = name.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
+    format!("https://music.youtube.com/search?q={q}#songs")
 }
 
 /// Lance yt-dlp ; chaque ligne (stdout et stderr) arrive dans le canal.
