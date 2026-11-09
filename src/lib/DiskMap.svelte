@@ -1,7 +1,7 @@
 <script>
   // Analyse d'un disque façon SpaceSniffer : chaque bloc a la taille de ce qu'il occupe.
   // Clic = entrer dans le dossier ; clic droit = ouvrir / afficher / mettre à la corbeille.
-  import { fade, scale } from "svelte/transition";
+  import { fade, scale, slide } from "svelte/transition";
   import { tick } from "svelte";
   import { listen } from "@tauri-apps/api/event";
   import Icon from "./Icon.svelte";
@@ -328,11 +328,7 @@
 <div class="backdrop" transition:fade={{ duration: 120 }} onclick={close} role="presentation"></div>
 <div class="win" transition:scale={{ start: 0.98, duration: 150 }} role="dialog" aria-label="Analyse du disque">
   <header>
-    {#if !scanning && view === "blocks" && stack.length > 1}
-      <button class="back" title="Dossier précédent (Retour arrière)" onclick={() => up(stack.length - 2)}><Icon name="chevron" size={18} /></button>
-    {:else}
-      <span class="ic"><Icon name="drive" size={18} /></span>
-    {/if}
+    <span class="ic"><Icon name="drive" size={18} /></span>
     <div class="crumbs">
       {#if tree && view === "blocks"}
         {#each stack as s, i}
@@ -384,6 +380,13 @@
       {/each}
     </div>
   {:else if node}
+    {#if !scanning && stack.length > 1}
+      <div class="mapbar" transition:slide={{ duration: 160 }}>
+        <button class="back" title="Dossier précédent (Retour arrière)" onclick={() => up(stack.length - 2)}>
+          <Icon name="chevron" size={15} />Retour à {stack.length > 2 ? stack[stack.length - 2].name : base}
+        </button>
+      </div>
+    {/if}
     <div class="map" class:scanning bind:clientWidth={W} bind:clientHeight={H}>
       <div class="inner" bind:this={inner}>
         {#each blocks as b (b.path)}
@@ -467,7 +470,8 @@
   .state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
   .state p { margin: 0; font-size: 14px; font-variant-numeric: tabular-nums; }
 
-  .back { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; border: 0; background: var(--accent); color: white; cursor: pointer; flex: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent); transition: transform 0.12s; }
+  .mapbar { display: flex; padding: 10px 10px 0; }
+  .back { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 14px 0 10px; border-radius: 10px; border: 0; font: inherit; font-size: 13px; font-weight: 650; background: var(--accent); color: white; cursor: pointer; flex: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 40%, transparent); transition: transform 0.12s; }
   .back :global(svg) { transform: rotate(180deg); }
   .back:hover { transform: translateX(-2px); }
   .tot.live { font-variant-numeric: tabular-nums; }
