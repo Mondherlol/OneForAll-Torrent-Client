@@ -16,7 +16,7 @@
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
   import Studio from "./lib/Studio.svelte";
-  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan, trashPath } from "./lib/api.js";
+  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan, trashPath, readBook } from "./lib/api.js";
   import { play as playGame } from "./lib/emu.svelte.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -69,6 +69,8 @@
   import ArtPicker from "./lib/ArtPicker.svelte";
   import DiskMap from "./lib/DiskMap.svelte";
   import RenameGame from "./lib/RenameGame.svelte";
+  import NeedApp from "./lib/NeedApp.svelte";
+  import { need } from "./lib/need.svelte.js";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
   let prefs = $state({ ...DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.prefs") ?? "{}") });
@@ -531,6 +533,7 @@
   async function startPlay(items) {
     try {
       const n = await play(items.map((i) => i.hash));
+      if (n == null) return; // pas de VLC : la fenêtre d’installation s’en charge
       flash(n > 1 ? `Lecture de ${n} fichiers à la suite` : "Lecture lancée");
     } catch (e) {
       flash(String(e));
@@ -541,7 +544,7 @@
   function primary(g) {
     const one = g.items.length === 1 ? g.items[0] : null;
     if (one && g.kind === "film" && one.progress > 0) return startPlay(g.items);
-    if (one && g.kind === "book") return openPath(one.content_path).catch((e) => flash(String(e)));
+    if (one && g.kind === "book") return readBook(one.content_path).catch((e) => flash(String(e)));
     const inst = g.items.find((i) => i.installed)?.installed;
     if (inst?.location) return openPath(inst.location).catch((e) => flash(String(e)));
     if (g.kind === "game" || g.kind === "software" || g.kind === "other") return onaction("reveal", g.items[0]);
@@ -1144,6 +1147,7 @@
 {#if ui.roms.length}<Play />{/if}
 {#if ui.artPick}<ArtPicker />{/if}
 {#if ui.rename}<RenameGame />{/if}
+{#if need.app}<NeedApp />{/if}
 {#if ui.diskMap}<DiskMap mount={ui.diskMap.mount} used={ui.diskMap.used} {torrents} {downloads} onclose={() => (ui.diskMap = null)} />{/if}
 <Confirm />
 

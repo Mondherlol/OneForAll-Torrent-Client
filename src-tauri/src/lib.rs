@@ -1,3 +1,4 @@
+mod apps;
 mod artwork;
 mod assoc;
 mod chapters;
@@ -585,6 +586,30 @@ async fn rom_versions(page: String) -> Result<Vec<search::RomVersion>, String> {
     }
     let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
     search::romsfun_versions(&client, &page).await
+}
+
+/// Lecteurs installés par OneForAll (VLC, SumatraPDF)
+#[tauri::command]
+fn apps_list() -> Vec<apps::AppInfo> {
+    apps::list()
+}
+
+/// Installe VLC ou SumatraPDF (avancement : événement « app-progress »)
+#[tauri::command]
+async fn app_install(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let a = app.clone();
+    let i = id.clone();
+    let exe = apps::install(&id, move |pct, msg| {
+        let _ = a.emit("app-progress", serde_json::json!({ "id": i, "pct": pct, "msg": msg }));
+    })
+    .await?;
+    Ok(exe.display().to_string())
+}
+
+/// Ouvre une BD, un manga ou un livre dans SumatraPDF (« NO_READER » s’il n’est pas installé)
+#[tauri::command]
+fn read_book(path: String) -> Result<(), String> {
+    apps::read(Path::new(&path))
 }
 
 /// Lien d’hébergeur (1fichier, DataNodes…) : fenêtre qui fait les clics puis envoie le fichier dans l’onglet DL
@@ -1303,14 +1328,7 @@ fn shell_open(target: &str) -> Result<(), String> {
 }
 
 fn find_vlc() -> Option<PathBuf> {
-    let mut c = vec![];
-    for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
-        if let Ok(base) = std::env::var(var) {
-            c.push(Path::new(&base).join("VideoLAN").join("VLC").join("vlc.exe"));
-            c.push(Path::new(&base).join("Programs").join("VideoLAN").join("VLC").join("vlc.exe"));
-        }
-    }
-    c.into_iter().find(|p| p.is_file())
+    apps::vlc()
 }
 
 /// Lit les vidéos/musiques cochées et téléchargées, dans l'ordre, dans VLC (en playlist)
@@ -1407,7 +1425,8 @@ fn start_player(app: tauri::AppHandle, list: Vec<player::Item>) -> Result<usize,
     match find_vlc() {
         // VLC suivi : position exacte (vu / en cours) et pistes audio / sous-titres retenues par série
         Some(vlc) => player::launch(app, &vlc, list)?,
-        None => explorer(format!("\"{}\"", list[0].path.display()))?,
+        // Pas de VLC : l’app propose de l’installer (puis relance la lecture)
+        None => return Err("NO_VLC".into()),
     }
     Ok(n)
 }
@@ -2349,6 +2368,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             emu_list,
             emu_detect,
+            apps_list,
+            app_install,
+            read_book,
             host_download,
             is_host_link,
             force_front,

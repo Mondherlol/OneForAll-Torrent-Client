@@ -179,10 +179,8 @@
   }
   // Ce qui est montré dans un dossier : ses gros éléments + « petits fichiers » s'ils pèsent
   const REST = (n) => ({ name: "Petits éléments", size: n.rest, cats: n.cats, files: 0, dir: false, children: [], rest: 0, isRest: true });
-  // Pendant l'analyse : la place pas encore parcourue, en bloc « Analyse en cours… »
-  const PENDING = (size) => ({ name: "Analyse en cours…", size, cats: [0, 0, 0, 0, 0, 0, 0, 0], files: 0, dir: false, children: [], rest: 0, isRest: true, pending: true });
   const shown = (n) =>
-    [...n.children, ...(n.rest > n.size * 0.01 ? [REST(n)] : []), ...(n === live && used > n.size ? [PENDING(used - n.size)] : [])].sort((a, b) => b.size - a.size);
+    [...n.children, ...(n.rest > n.size * 0.01 ? [REST(n)] : [])].sort((a, b) => b.size - a.size);
 
   let W = $state(0);
   let H = $state(0);
@@ -398,6 +396,7 @@
             class:pending={b.n.pending}
             class:live={b.n.live}
             class:nested={b.kids.length}
+            in:scale={{ start: 0.6, duration: 260 }}
             style="left:{b.x}px;top:{b.y}px;width:{b.w}px;height:{b.h}px;--c:{color(b.n)};--cs:{color(b.n, 0.16)}"
             role="button"
             tabindex="-1"

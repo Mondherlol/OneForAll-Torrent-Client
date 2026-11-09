@@ -156,7 +156,7 @@ fn sniff_pbp(p: &Path) -> Option<&'static str> {
 
 // ---------- ROM dans une archive (.zip, .7z : RomsFun, WowRoms…) ----------
 
-fn tar() -> std::process::Command {
+pub(crate) fn tar() -> std::process::Command {
     let exe = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())).join(r"System32\tar.exe");
     let mut c = std::process::Command::new(exe);
     #[cfg(windows)]
@@ -341,7 +341,7 @@ async fn latest(client: &reqwest::Client, m: &Emu) -> Result<(String, String), S
 }
 
 /// L'exe principal dans le dossier décompressé (le nom le plus court qui correspond).
-fn find_exe(dir: &Path, prefix: &str) -> Option<PathBuf> {
+pub(crate) fn find_exe(dir: &Path, prefix: &str) -> Option<PathBuf> {
     walkdir::WalkDir::new(dir)
         .max_depth(4)
         .into_iter()

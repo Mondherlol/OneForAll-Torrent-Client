@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { need } from "./need.svelte.js";
 
 export const getTorrents = () => invoke("get_torrents");
 export const torrentAction = (hashes, action) => invoke("torrent_action", { hashes, action });
@@ -20,7 +21,18 @@ export const forgetArtwork = (key) => invoke("forget_artwork", { key });
 export const artChoices = (kind, title, year) => invoke("art_choices", { kind, title, year: year ?? null });
 /** { url, fallback } d'une proposition, ou { path } d'un fichier, ou { data } (data: URL d'une image collée) */
 export const setArtwork = (key, { url = null, fallback = null, path = null, data = null }) => invoke("set_artwork", { key, url, fallback, path, data });
-export const play = (hashes) => invoke("play", { hashes });
+// Pas de lecteur sur le PC : on propose de l’installer, puis on relance (renvoie null en attendant)
+const withApp = (id, code, fn) => async (...a) => {
+  try {
+    return await fn(...a);
+  } catch (e) {
+    if (!String(e).includes(code)) throw e;
+    need.app = id;
+    need.retry = () => withApp(id, code, fn)(...a);
+    return null;
+  }
+};
+export const play = withApp("vlc", "NO_VLC", (hashes) => invoke("play", { hashes }));
 export const shareTorrents = (hashes) => invoke("share_torrents", { hashes });
 export const trashTorrentFiles = (hash, ids) => invoke("trash_torrent_files", { hash, ids });
 export const setLocation = (hashes, location) => invoke("set_location", { hashes, location });
@@ -60,7 +72,10 @@ export const nxbrewLinks = (page) => invoke("nxbrew_links", { page });
 export const getWatch = (paths) => invoke("get_watch", { paths });
 export const setWatched = (paths, watched) => invoke("set_watched", { paths, watched });
 // Lecture suivie dans VLC (position exacte, pistes audio / sous-titres retenues par série)
-export const playFiles = (hash, paths) => invoke("play_files", { hash, paths });
+export const playFiles = withApp("vlc", "NO_VLC", (hash, paths) => invoke("play_files", { hash, paths }));
+export const readBook = withApp("reader", "NO_READER", (path) => invoke("read_book", { path }));
+export const appsList = () => invoke("apps_list");
+export const appInstall = (id) => invoke("app_install", { id });
 
 // ---------- émulateurs ----------
 export const emuList = () => invoke("emu_list");

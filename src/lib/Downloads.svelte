@@ -8,7 +8,7 @@
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
   import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, wantArt } from "./ui.svelte.js";
-  import { dlExtract, dlSetKind, emuDetect, hostDownload, isHostLink } from "./api.js";
+  import { dlExtract, dlSetKind, emuDetect, hostDownload, isHostLink, readBook } from "./api.js";
   import ConsoleBadge from "./ConsoleBadge.svelte";
   import { emuById, play } from "./emu.svelte.js";
 
@@ -219,7 +219,7 @@
   // Terminé : on ouvre le fichier. Sinon : la vidéo d'origine (pas encore de fichier), ou le dossier.
   const web = (d) => d.media && d.media !== "compress" && d.media !== "clip";
   const openItem = (d) =>
-    (d.st === "done" ? openPath(d.path) : web(d) ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
+    (d.st === "done" ? (d.kind === "book" ? readBook(d.path) : openPath(d.path)) : web(d) ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
 
   function menu(e, d) {
     openMenu(e, [
