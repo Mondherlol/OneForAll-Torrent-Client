@@ -16,7 +16,7 @@
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
   import Studio from "./lib/Studio.svelte";
-  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan, trashPath, readBook } from "./lib/api.js";
+  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan, trashPath, readBook, emuFindRoms } from "./lib/api.js";
   import { play as playGame } from "./lib/emu.svelte.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -540,6 +540,17 @@
     }
   }
 
+  // Jeu console (ROM) : il se lance dans son émulateur ; sinon (jeu PC…) on ouvre son dossier
+  async function playTorrentGame(g) {
+    for (const it of g.items) {
+      try {
+        const roms = (await emuFindRoms(it.content_path || it.save_path)).filter((r) => r.emu);
+        if (roms.length) return playGame(roms[0]);
+      } catch {}
+    }
+    onaction("reveal", g.items[0]);
+  }
+
   /** Action du double-clic : lire un film, ouvrir un livre, ouvrir le dossier d'un jeu… ; une série ouvre ses épisodes. */
   function primary(g) {
     const one = g.items.length === 1 ? g.items[0] : null;
@@ -547,6 +558,7 @@
     if (one && g.kind === "book") return readBook(one.content_path).catch((e) => flash(String(e)));
     const inst = g.items.find((i) => i.installed)?.installed;
     if (inst?.location) return openPath(inst.location).catch((e) => flash(String(e)));
+    if (g.kind === "game" && g.items.every((i) => i.progress >= 1)) return playTorrentGame(g);
     if (g.kind === "game" || g.kind === "software" || g.kind === "other") return onaction("reveal", g.items[0]);
     selectedKey = g.key;
   }
