@@ -2,6 +2,13 @@
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
+
+// Juste après une mise à jour, l'app est relancée par l'installateur : on la ramène devant
+if (localStorage.getItem("oneforall.justUpdated")) {
+  localStorage.removeItem("oneforall.justUpdated");
+  for (const ms of [300, 1200]) setTimeout(() => invoke("force_front").catch(() => {}), ms);
+}
 
 export const upd = $state({
   current: "",
@@ -40,6 +47,7 @@ export async function installUpdate() {
   let got = 0;
   upd.progress = 0;
   try {
+    localStorage.setItem("oneforall.justUpdated", "1");
     await update.downloadAndInstall((ev) => {
       if (ev.event === "Started") total = ev.data.contentLength ?? 0;
       else if (ev.event === "Progress") {
@@ -49,6 +57,7 @@ export async function installUpdate() {
     });
     await relaunch();
   } catch (e) {
+    localStorage.removeItem("oneforall.justUpdated");
     upd.error = String(e);
     upd.progress = null;
   }

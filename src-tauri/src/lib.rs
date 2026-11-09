@@ -2169,6 +2169,31 @@ fn open_from_args(app: tauri::AppHandle, args: Vec<String>) {
     });
 }
 
+/// Remet la fenêtre au premier plan, même lancée par un autre programme (l'installateur après
+/// une mise à jour) : Windows refuse alors le premier plan, d'où l'appui simulé sur Alt.
+#[tauri::command]
+fn force_front(window: tauri::WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    #[cfg(windows)]
+    if let Ok(h) = window.hwnd() {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{BringWindowToTop, SetForegroundWindow};
+        unsafe {
+            keybd_event(VK_MENU as u8, 0, 0, 0);
+            keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+            SetForegroundWindow(h.0 as _);
+            BringWindowToTop(h.0 as _);
+        }
+    }
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_focus();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        let _ = window.set_always_on_top(false);
+    });
+}
+
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -2303,6 +2328,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             emu_list,
             emu_detect,
+            force_front,
             rom_library,
             rom_scan,
             disk_analyze,

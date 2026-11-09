@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.10.2"
+version = "0.10.3"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
@@ -27,7 +27,7 @@ sysinfo = { version = "0.40.1", default-features = false, features = ["disk"] }
 tauri-plugin-dialog = "2"
 winreg = "0.56.0"
 tauri-plugin-single-instance = "2"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_UI_Shell"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse"] }
 tauri-winrt-notification = "0.8"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
