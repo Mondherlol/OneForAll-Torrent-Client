@@ -971,10 +971,11 @@
         {/if}
       {/each}
       <span class="vsep"></span>
-      <button class="chip dlchip" class:on={view === "downloads"} onclick={() => (view = view === "downloads" ? "torrents" : "downloads")} title="Téléchargements directs (liens http)">
+      <button class="chip dlchip" class:on={view === "downloads"} onclick={() => (view = view === "downloads" ? "torrents" : "downloads")} title="Téléchargements directs (liens http){dlActive ? ` · ${dlActive} en cours` : ""}">
         <Icon name="download" size={15} />
         <span class="dltxt">DL</span>
-        {#if dlActive}<span class="n">{dlActive}</span>{/if}
+        <span class="n">{downloads.length}</span>
+        {#if dlActive}<span class="dl-live" title="{dlActive} en cours"></span>{/if}
       </button>
     </div>
 
@@ -1292,6 +1293,9 @@
   .vsep { width: 1px; align-self: stretch; margin: 4px 4px; background: var(--line-strong); }
   .dlchip { gap: 6px; }
   .dltxt { font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
+  .dlchip { position: relative; }
+  .dl-live { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 2px var(--bg); animation: dlpulse 1.6s ease-in-out infinite; }
+  @keyframes dlpulse { 50% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 5px rgb(22 163 74 / 0.3); } }
   .seg { display: flex; padding: 3px; border-radius: 10px; background: var(--chip); }
   .seg button { display: inline-flex; align-items: center; gap: 6px; height: calc(var(--ctl-h) - 6px); padding: 0 11px; border: 0; border-radius: 7px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 550; cursor: pointer; }
   .seg button:hover { color: var(--text); }
