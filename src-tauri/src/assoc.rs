@@ -15,6 +15,19 @@ pub fn register() {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let command = format!("\"{exe}\" \"%1\"");
     let icon = format!("\"{exe}\",0");
+    // Icônes des fichiers (document coloré + logo + bande « TORRENT » / « JEU »).
+    // Nom versionné : l'Explorateur garde en cache l'ancienne image d'un même chemin.
+    let file_icon = |name: &str, bytes: &[u8]| -> String {
+        let dir = crate::config::data_dir().join("icons");
+        let p = dir.join(format!("{name}-v1.ico"));
+        if !p.is_file() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&p, bytes);
+        }
+        if p.is_file() { format!("\"{}\"", p.display()) } else { icon.clone() }
+    };
+    let torrent_icon = file_icon("torrent", include_bytes!("../icons/file-torrent.ico"));
+    let rom_icon = file_icon("rom", include_bytes!("../icons/file-rom.ico"));
 
     let set = |path: &str, name: &str, value: &str| {
         if let Ok((k, _)) = hkcu.create_subkey(path) {
@@ -31,7 +44,7 @@ pub fn register() {
 
     // Type de fichier OneForAll
     set(r"Software\Classes\OneForAll.torrent", "", "Fichier torrent");
-    set(r"Software\Classes\OneForAll.torrent\DefaultIcon", "", &icon);
+    set(r"Software\Classes\OneForAll.torrent\DefaultIcon", "", &torrent_icon);
     set(r"Software\Classes\OneForAll.torrent\shell\open\command", "", &command);
     set(r"Software\Classes\.torrent", "", "OneForAll.torrent");
     set(r"Software\Classes\.torrent\OpenWithProgids", "OneForAll.torrent", "");
@@ -44,7 +57,7 @@ pub fn register() {
 
     // ROM de jeux : jouées dans le bon émulateur
     set(r"Software\Classes\OneForAll.rom", "", "Jeu (ROM)");
-    set(r"Software\Classes\OneForAll.rom\DefaultIcon", "", &icon);
+    set(r"Software\Classes\OneForAll.rom\DefaultIcon", "", &rom_icon);
     set(r"Software\Classes\OneForAll.rom\shell\open", "", "Jouer avec OneForAll");
     set(r"Software\Classes\OneForAll.rom\shell\open\command", "", &command);
     for e in crate::emu::ASSOC_DEFAULT {
