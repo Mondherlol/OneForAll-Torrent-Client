@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
+  import Carousel from "./Carousel.svelte";
   import { nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
@@ -576,7 +577,7 @@
             {#if CATALOG[genre]}
               <section class="strip-sec">
                 <h4><Icon name="calendar" size={14} />Tendances de la semaine <small>{CATALOG[genre]}</small></h4>
-                <div class="strip">
+                <Carousel>
                   {#if !trends?.list}
                     {#each Array(8) as _}<span class="tcard sk"></span>{/each}
                   {:else if !trends.list.length}
@@ -590,7 +591,7 @@
                       </button>
                     {/each}
                   {/if}
-                </div>
+                </Carousel>
               </section>
             {/if}
 
@@ -599,7 +600,7 @@
               {#if !(Array.isArray(p) && !p.length)}
                 <section class="strip-sec">
                   <h4>{@render sico(x)}Populaire sur {SOURCES[x].label}</h4>
-                  <div class="strip">
+                  <Carousel>
                     {#if p == null}
                       {#each Array(8) as _}<span class="tcard sk"></span>{/each}
                     {:else if p.error}
@@ -617,7 +618,7 @@
                         </button>
                       {/each}
                     {/if}
-                  </div>
+                  </Carousel>
                 </section>
               {/if}
             {/each}
@@ -789,10 +790,7 @@
   .r-clear:hover { background: var(--chip); color: var(--text); }
   .strip-sec h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 14px; color: var(--text); }
   .strip-sec h4 small { font-size: 11px; font-weight: 600; color: var(--muted); }
-  .strip { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 8px; scroll-snap-type: x proximity; }
-  .strip::-webkit-scrollbar { height: 6px; }
-  .strip::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 6px; }
-  .tcard { flex: none; width: 118px; display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; scroll-snap-align: start; }
+  .tcard { flex: none; width: 118px; display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
   .tc-img { position: relative; display: grid; place-items: center; width: 118px; aspect-ratio: 2 / 3; border-radius: 10px; overflow: hidden; background: var(--chip); color: var(--muted); margin-bottom: 4px; box-shadow: 0 3px 10px rgb(0 0 0 / 0.12); transition: transform 0.15s, box-shadow 0.15s; }
   .tc-img img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .tcard:hover .tc-img { transform: translateY(-3px); box-shadow: 0 10px 22px rgb(0 0 0 / 0.22), 0 0 0 2px var(--accent); }
