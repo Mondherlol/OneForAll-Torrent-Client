@@ -64,7 +64,8 @@
   import { open as pickFolder } from "@tauri-apps/plugin-dialog";
   import { getCategories, getDisks, getTorrents, openPath, play, reveal, runSetup, setCategory, setLocation, shareTorrents, torrentAction, uninstallProgram } from "./lib/api.js";
   import { KINDS, PLAYABLE, SORTS, STATUS_FILTERS, THEMES, buildGroups, fmtSize, themeOf, fmtSpeed, isActive, isDone, isPaused, sortGroups } from "./lib/model.js";
-  import { confirmAsk, copy, flash, openMenu, openStudio, refreshArt, ui } from "./lib/ui.svelte.js";
+  import { confirmAsk, copy, flash, openMenu, openStudio, pickArt, ui } from "./lib/ui.svelte.js";
+  import ArtPicker from "./lib/ArtPicker.svelte";
 
   const DEFAULTS = { kind: "all", status: "all", sort: "added", dir: "desc", grouped: true, theme: "light" };
   let prefs = $state({ ...DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.prefs") ?? "{}") });
@@ -538,7 +539,7 @@
       shareMenu(its, one),
       "-",
       { label: "Copier le nom", icon: "copy", run: () => copy(one ? one.name : g.title) },
-      { label: "Actualiser l'image", icon: "image", run: () => refreshArt(g.artKey) },
+      { label: "Choisir l'image…", icon: "image", run: () => pickArt(g) },
       "-",
       { label: "Retirer de qBittorrent", icon: "close", run: () => remove(its, false) },
       { label: "Supprimer avec les fichiers", icon: "trash", danger: true, run: () => remove(its, true) },
@@ -919,6 +920,7 @@
   <Studio path={ui.studio} onexported={() => ((view = "downloads"), refreshDownloads())} />
 {/if}
 {#if ui.roms.length}<Play />{/if}
+{#if ui.artPick}<ArtPicker />{/if}
 <Confirm />
 
 {#if ui.toast}

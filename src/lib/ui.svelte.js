@@ -7,6 +7,7 @@ export const ui = $state({
   toast: null,
   studio: null, // chemin de la vidéo ouverte dans le studio d'extraits
   roms: [], // ROM à lancer (fenêtre « Jouer »)
+  artPick: null, // { key, kind, title, year } : fenêtre « Choisir l'image »
 });
 
 export function openMenu(e, items) {
@@ -73,6 +74,11 @@ function pump() {
         pump();
       });
   }
+}
+
+/** Fenêtre « Choisir l'image » pour un groupe (affiche, jaquette…) */
+export function pickArt(g) {
+  ui.artPick = { key: g.artKey, kind: g.kind, title: g.title, year: g.year ?? null };
 }
 
 export async function refreshArt(key) {

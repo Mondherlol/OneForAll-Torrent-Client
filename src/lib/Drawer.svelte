@@ -5,7 +5,7 @@
   import Sources from "./Sources.svelte";
   import { KINDS, STATUS_LABEL, fmtEta, fmtPos, fmtSize, fmtSpeed, hueOf, isDone, isPaused, partialLabel, subtitle } from "./model.js";
   import { getWatch, setWatched } from "./api.js";
-  import { flash } from "./ui.svelte.js";
+  import { flash, pickArt } from "./ui.svelte.js";
   import { emuFindRoms } from "./api.js";
   import { emuById, emus, loadEmus, play } from "./emu.svelte.js";
   import { arts, schedules, wantSchedule, airTime, fmtAir, releaseGroup, alignEpisodes } from "./ui.svelte.js";
@@ -177,11 +177,14 @@
       <button class="icon-btn close" title="Fermer (Échap)" onclick={onclose}><Icon name="close" size={15} /></button>
     </div>
     <div class="hero-row">
-      {#if art && posterOk}
-        <img class="poster" src={art.url} alt="" onerror={() => (posterOk = false)} />
-      {:else}
-        <span class="poster ph"><Icon name={g.kind} size={30} /></span>
-      {/if}
+      <button class="poster-btn" title="Choisir l'image" onclick={() => pickArt(g)}>
+        {#if art && posterOk}
+          <img class="poster" src={art.url} alt="" onerror={() => (posterOk = false)} />
+        {:else}
+          <span class="poster ph"><Icon name={g.kind} size={30} /></span>
+        {/if}
+        <span class="poster-edit"><Icon name="image" size={16} /></span>
+      </button>
       <div class="hero-text">
         <span class="kind"><Icon name={g.kind} size={12} />{kindLabel}</span>
         <h2>{g.title}</h2>
@@ -427,6 +430,10 @@
   .hp-text b { font-size: 15px; color: white; font-variant-numeric: tabular-nums; }
   .hero-progress.paused .hp-text span:first-of-type { color: #fbbf24; font-weight: 700; }
   .poster { width: 64px; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 8px; box-shadow: 0 8px 20px rgb(0 0 0 / 0.5); flex: none; }
+  .poster-btn { position: relative; flex: none; padding: 0; border: 0; background: none; border-radius: 8px; cursor: pointer; }
+  .poster-btn .poster { display: block; }
+  .poster-edit { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 8px; background: rgb(0 0 0 / 0.5); color: white; opacity: 0; transition: opacity 0.15s; }
+  .poster-btn:hover .poster-edit { opacity: 1; }
   .poster.ph { display: grid; place-items: center; background: rgb(255 255 255 / 0.1); }
   .hero-text { min-width: 0; }
   .kind { display: inline-flex; gap: 5px; align-items: center; font-size: 11px; font-weight: 650; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.08em; }

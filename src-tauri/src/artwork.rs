@@ -58,12 +58,98 @@ fn cache_path() -> std::path::PathBuf {
     data_dir().join("artwork.json")
 }
 
-/// Mots en minuscules, sans ponctuation.
+/// Mots en minuscules, sans ponctuation ni accents (« Pokémon » = « pokemon »).
 fn words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
+        .map(|w| fold(&w.to_lowercase()))
         .collect()
+}
+
+/// Lettres sans accents (les plus courantes)
+fn fold(w: &str) -> String {
+    w.chars()
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ä' | 'ã' | 'å' | 'ā' => 'a',
+            'ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' | 'ē' => 'e',
+            'ì' | 'í' | 'î' | 'ï' | 'ī' => 'i',
+            'ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'ö' | 'õ' | 'ō' | 'ø' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' => 'u',
+            'ý' | 'ÿ' => 'y',
+            c => c,
+        })
+        .collect()
+}
+
+/// Distance d'édition (lettres ajoutées, retirées ou changées)
+fn lev(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1; b.len() + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != cb)).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// Deux mots « pareils » malgré une faute de frappe : 1 lettre d'écart dès 5 lettres, 2 dès 8.
+fn same_word(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let n = a.chars().count().min(b.chars().count());
+    let tol = if n >= 8 { 2 } else if n >= 5 { 1 } else { 0 };
+    tol > 0 && lev(a, b) <= tol
+}
+
+/// Tous les mots cherchés (sauf les tout petits) sont dans le titre trouvé : nom raccourci
+/// (« Zelda Ocarina » → « The Legend of Zelda: Ocarina of Time »).
+fn contains_all(query: &str, found: &str) -> bool {
+    let (a, b) = (words(query), words(found));
+    let a: Vec<&String> = a.iter().filter(|w| w.chars().count() > 2).collect();
+    !a.is_empty() && a.iter().all(|w| b.iter().any(|x| same_word(w, x)))
+}
+
+/// Proximité entre deux titres (0 à 1) : mots en commun, 1 si identiques.
+fn closeness(query: &str, found: &str) -> f64 {
+    let (a, b) = (words(query), words(found));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    if a.concat() == b.concat() {
+        return 1.0;
+    }
+    let common = a.iter().filter(|w| b.iter().any(|x| same_word(w, x))).count() as f64;
+    0.99 * common / ((a.len() + b.len()) as f64 - common)
+}
+
+/// Nom d'un jeu IGDB et ses noms alternatifs (autres langues, régions)
+fn names_of(g: &Value) -> Vec<String> {
+    std::iter::once(g["name"].as_str().unwrap_or_default().to_string())
+        .chain(g["alternative_names"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str().map(str::to_string)))
+        .collect()
+}
+
+fn igdb_img(id: &str, size: &str) -> String {
+    format!("https://images.igdb.com/igdb/image/upload/{size}/{id}.jpg")
+}
+
+/// Une image proposée dans la fenêtre « Choisir l'image »
+#[derive(Serialize, Clone, Debug)]
+pub struct Choice {
+    pub url: String,
+    pub fallback: Option<String>,
+    /// « IGDB », « TMDB »…
+    pub source: &'static str,
+    /// Titre de l'œuvre trouvée
+    pub title: String,
+    /// Année, consoles…
+    pub sub: String,
 }
 
 /// Vérifie qu'un résultat correspond vraiment au titre recherché.
@@ -76,7 +162,7 @@ pub fn similar(query: &str, found: &str) -> bool {
     if ja == jb || jb.starts_with(&ja) || ja.starts_with(&jb) {
         return true;
     }
-    let common = a.iter().filter(|w| b.contains(w)).count() as f64;
+    let common = a.iter().filter(|w| b.iter().any(|x| same_word(w, x))).count() as f64;
     let union = (a.len() + b.len()) as f64 - common;
     common / union >= 0.5
 }
@@ -158,6 +244,11 @@ impl Artwork {
         if path.is_file() {
             return Some(path);
         }
+        if let Some(b64) = art.url.strip_prefix("data:image/jpeg;base64,") {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+            return std::fs::write(&path, bytes).ok().map(|_| path);
+        }
         for url in [Some(art.url), art.fallback].into_iter().flatten() {
             let Ok(res) = self.client.get(&url).send().await else { continue };
             if !res.status().is_success() {
@@ -169,6 +260,191 @@ impl Artwork {
             }
         }
         None
+    }
+
+    /// Image choisie par l'utilisateur : remplace l'image automatique (gardée en cache).
+    pub fn set(&self, key: &str, art: Art) {
+        let mut cache = self.cache.lock().unwrap();
+        cache.insert(key.to_string(), Some(art));
+        let found_only: HashMap<&String, &Option<Art>> = cache.iter().filter(|(_, v)| v.is_some()).collect();
+        if let Ok(s) = serde_json::to_string(&found_only) {
+            let _ = std::fs::create_dir_all(data_dir());
+            let _ = std::fs::write(cache_path(), s);
+        }
+        drop(cache);
+        // L'affiche des notifications sera refaite avec la nouvelle image
+        let name: String = key.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+        let _ = std::fs::remove_file(data_dir().join("posters").join(format!("{name}.jpg")));
+    }
+
+    /// Images possibles pour un titre, toutes sources confondues selon le type (les plus probables d'abord).
+    pub async fn choices(&self, kind: &str, q: &str, year: Option<u32>, tmdb: &str) -> Vec<Choice> {
+        let q = query_of(q);
+        let q = q.as_str();
+        let none = || async { Vec::<Choice>::new() };
+        let (a, b, c, d) = match kind {
+            "game" | "other" | "software" => tokio::join!(self.igdb_choices(q), self.steam_choices(q), self.wiki_choices("en", q, "video game"), self.wiki_choices("fr", q, "jeu vidéo")),
+            "film" => tokio::join!(self.tmdb_choices("movie", q, year, tmdb), self.itunes_choices(q, "movie", "600x900bb"), self.wiki_choices("en", q, "film"), self.wiki_choices("fr", q, "film")),
+            "anime" => tokio::join!(self.anilist_choices(q, "ANIME"), self.tmdb_choices("tv", q, None, tmdb), self.tvmaze_choices(q), none()),
+            "series" => tokio::join!(self.tmdb_choices("tv", q, None, tmdb), self.tvmaze_choices(q), self.anilist_choices(q, "ANIME"), none()),
+            "book" => tokio::join!(self.anilist_choices(q, "MANGA"), self.itunes_choices(q, "ebook", "600x900bb"), self.wiki_choices("fr", q, "manga"), none()),
+            "audio" => tokio::join!(self.itunes_choices(q, "audiobook", "600x600bb"), self.itunes_choices(q, "music", "600x600bb"), none(), none()),
+            _ => tokio::join!(self.tmdb_choices("movie", q, year, tmdb), self.igdb_choices(q), self.tvmaze_choices(q), self.anilist_choices(q, "ANIME")),
+        };
+        let mut seen = std::collections::HashSet::new();
+        [a, b, c, d].into_iter().flatten().filter(|x| seen.insert(x.url.clone())).collect()
+    }
+
+    async fn igdb_choices(&self, q: &str) -> Vec<Choice> {
+        self.igdb_games(q, 12)
+            .await
+            .into_iter()
+            .filter_map(|(_, g)| {
+                let cover = g["cover"]["image_id"].as_str()?;
+                let year = g["first_release_date"].as_i64().map(|t| (1970 + t / 31_556_952).to_string());
+                let plats: Vec<&str> = g["platforms"].as_array().into_iter().flatten().filter_map(|p| p["abbreviation"].as_str()).take(3).collect();
+                let sub = year.into_iter().chain((!plats.is_empty()).then(|| plats.join(", "))).collect::<Vec<_>>().join(" · ");
+                Some(Choice { url: igdb_img(cover, "t_cover_big_2x"), fallback: Some(igdb_img(cover, "t_cover_big")), source: "IGDB", title: g["name"].as_str().unwrap_or_default().into(), sub })
+            })
+            .collect()
+    }
+
+    async fn steam_choices(&self, q: &str) -> Vec<Choice> {
+        let req = self.client.get("https://store.steampowered.com/api/storesearch/").query(&[("term", q), ("l", "french"), ("cc", "FR")]);
+        let Ok(v) = self.json(req).await else { return Vec::new() };
+        let items: Vec<(i64, String)> = v["items"].as_array().into_iter().flatten().filter_map(|r| Some((r["id"].as_i64()?, r["name"].as_str()?.to_string()))).take(6).collect();
+        let mut out = Vec::new();
+        for (id, name) in items {
+            let art = match self.steam_assets(id).await {
+                Some(a) => a,
+                None => {
+                    let base = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{id}");
+                    Art::new(format!("{base}/library_600x900.jpg")).fallback(format!("{base}/header.jpg"))
+                }
+            };
+            out.push(Choice { url: art.url, fallback: art.fallback, source: "Steam", title: name, sub: String::new() });
+        }
+        out
+    }
+
+    async fn wiki_choices(&self, lang: &str, q: &str, hint: &str) -> Vec<Choice> {
+        let search = format!("{q} {hint}");
+        let req = self.client.get(format!("https://{lang}.wikipedia.org/w/api.php")).query(&[
+            ("action", "query"),
+            ("format", "json"),
+            ("generator", "search"),
+            ("gsrsearch", search.as_str()),
+            ("gsrlimit", "6"),
+            ("prop", "pageimages"),
+            ("piprop", "thumbnail"),
+            ("pithumbsize", "600"),
+            ("pilicense", "any"),
+        ]);
+        let Ok(v) = self.json(req).await else { return Vec::new() };
+        let mut pages: Vec<&Value> = v["query"]["pages"].as_object().into_iter().flat_map(|m| m.values()).collect();
+        pages.sort_by_key(|p| p["index"].as_i64().unwrap_or(99));
+        let src = if lang == "fr" { "Wikipédia FR" } else { "Wikipédia" };
+        pages
+            .into_iter()
+            .filter_map(|p| Some(Choice { url: p["thumbnail"]["source"].as_str()?.into(), fallback: None, source: src, title: p["title"].as_str()?.into(), sub: String::new() }))
+            .collect()
+    }
+
+    /// TMDB : affiches des résultats, plus toutes les affiches (langues, éditions) du premier.
+    async fn tmdb_choices(&self, kind: &str, q: &str, year: Option<u32>, key: &str) -> Vec<Choice> {
+        if key.is_empty() {
+            return Vec::new();
+        }
+        let y = year.map(|y| y.to_string()).unwrap_or_default();
+        let mut query = vec![("api_key", key), ("query", q), ("language", "fr-FR")];
+        if !y.is_empty() && kind == "movie" {
+            query.push(("year", &y));
+        }
+        let Ok(v) = self.json(self.client.get(format!("https://api.themoviedb.org/3/search/{kind}")).query(&query)).await else { return Vec::new() };
+        let img = |p: &str| (format!("https://image.tmdb.org/t/p/w500{p}"), format!("https://image.tmdb.org/t/p/w342{p}"));
+        let name = |r: &Value| r["title"].as_str().or(r["name"].as_str()).unwrap_or_default().to_string();
+        let date = |r: &Value| r["release_date"].as_str().or(r["first_air_date"].as_str()).unwrap_or_default().chars().take(4).collect::<String>();
+        let results: Vec<&Value> = v["results"].as_array().into_iter().flatten().filter(|r| r["poster_path"].is_string()).take(8).collect();
+        let mut out: Vec<Choice> = Vec::new();
+        for (i, r) in results.iter().enumerate() {
+            let (u, f) = img(r["poster_path"].as_str().unwrap_or_default());
+            out.push(Choice { url: u, fallback: Some(f), source: "TMDB", title: name(r), sub: date(r) });
+            if i > 0 {
+                continue;
+            }
+            // Les autres affiches du premier résultat juste après lui
+            let id = r["id"].as_i64().unwrap_or_default();
+            let url = format!("https://api.themoviedb.org/3/{kind}/{id}/images");
+            if let Ok(imgs) = self.json(self.client.get(url).query(&[("api_key", key), ("include_image_language", "fr,en,null,ja")])).await {
+                for p in imgs["posters"].as_array().into_iter().flatten().take(16) {
+                    let Some(path) = p["file_path"].as_str() else { continue };
+                    let (u, f) = img(path);
+                    let lang = p["iso_639_1"].as_str().map(|l| l.to_uppercase()).unwrap_or_else(|| "sans texte".into());
+                    out.push(Choice { url: u, fallback: Some(f), source: "TMDB", title: name(r), sub: [date(r), lang].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" · ") });
+                }
+            }
+        }
+        out
+    }
+
+    async fn itunes_choices(&self, q: &str, media: &str, size: &str) -> Vec<Choice> {
+        let country = if media == "movie" { "US" } else { "FR" };
+        let mut query = vec![("term", q), ("limit", "15"), ("country", country)];
+        if media != "movie" {
+            query.push(("media", media));
+        }
+        let Ok(v) = self.json(self.client.get("https://itunes.apple.com/search").query(&query)).await else { return Vec::new() };
+        v["results"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| media != "movie" || r["kind"].as_str() == Some("feature-movie"))
+            .filter_map(|r| {
+                let img = r["artworkUrl100"].as_str()?;
+                let title = r["trackName"].as_str().or(r["collectionName"].as_str())?.to_string();
+                let sub = r["releaseDate"].as_str().unwrap_or_default().chars().take(4).collect();
+                Some(Choice { url: img.replace("100x100bb", size), fallback: Some(img.into()), source: "iTunes", title, sub })
+            })
+            .take(8)
+            .collect()
+    }
+
+    async fn tvmaze_choices(&self, q: &str) -> Vec<Choice> {
+        let Ok(v) = self.json(self.client.get("https://api.tvmaze.com/search/shows").query(&[("q", q)])).await else { return Vec::new() };
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let show = &r["show"];
+                let img = show["image"]["original"].as_str().or(show["image"]["medium"].as_str())?;
+                Some(Choice {
+                    url: img.into(),
+                    fallback: show["image"]["medium"].as_str().map(Into::into),
+                    source: "TVmaze",
+                    title: show["name"].as_str()?.into(),
+                    sub: show["premiered"].as_str().unwrap_or_default().chars().take(4).collect(),
+                })
+            })
+            .collect()
+    }
+
+    async fn anilist_choices(&self, q: &str, kind: &str) -> Vec<Choice> {
+        let body = json!({
+            "query": "query($s:String,$t:MediaType){Page(perPage:10){media(search:$s,type:$t){format seasonYear title{romaji english} coverImage{extraLarge large}}}}",
+            "variables": { "s": q, "t": kind }
+        });
+        let Ok(v) = self.json(self.client.post("https://graphql.anilist.co").json(&body)).await else { return Vec::new() };
+        v["data"]["Page"]["media"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                let img = m["coverImage"]["extraLarge"].as_str().or(m["coverImage"]["large"].as_str())?;
+                let title = m["title"]["english"].as_str().or(m["title"]["romaji"].as_str())?.to_string();
+                let sub = [m["seasonYear"].as_i64().map(|y| y.to_string()), m["format"].as_str().map(str::to_string)].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                Some(Choice { url: img.into(), fallback: m["coverImage"]["large"].as_str().map(Into::into), source: "AniList", title, sub })
+            })
+            .collect()
     }
 
     pub fn forget(&self, key: &str) {
@@ -285,33 +561,105 @@ impl Artwork {
         Some(token)
     }
 
-    /// Jaquette IGDB du jeu le plus proche du titre (une erreur → on passe aux autres sources).
-    async fn igdb(&self, q: &str) -> Option<Art> {
+    /// Requête IGDB (jeton renouvelé une fois s'il est refusé). Une erreur → None.
+    async fn igdb_query(&self, endpoint: &str, body: &str) -> Option<Vec<Value>> {
         if !igdb_enabled() {
             return None;
         }
         let id = IGDB_ID?;
-        let body = format!("search \"{}\"; fields name,alternative_names.name,cover.image_id,artworks.image_id; limit 10;", q.replace('"', " "));
         let mut renew = false;
-        let games: Vec<Value> = loop {
+        loop {
             let token = self.igdb_auth(renew).await?;
-            let res = self.client.post("https://api.igdb.com/v4/games").header("Client-ID", id).bearer_auth(&token).body(body.clone()).send().await.ok()?;
+            let res = self.client.post(format!("https://api.igdb.com/v4/{endpoint}")).header("Client-ID", id).bearer_auth(&token).body(body.to_string()).send().await.ok()?;
             if res.status() == reqwest::StatusCode::UNAUTHORIZED && !renew {
                 renew = true; // jeton expiré : on en redemande un
                 continue;
             }
-            break res.error_for_status().ok()?.json().await.ok()?;
+            return res.error_for_status().ok()?.json().await.ok();
+        }
+    }
+
+    /// Jeux IGDB pour un titre (même principe que la recherche de MyPlayLog) :
+    /// - la recherche plein texte d'IGDB (tolère des fautes) ;
+    /// - en même temps, CHAQUE mot dans le nom ou un nom alternatif, dans n'importe quel ordre
+    ///   et avec ou sans accents : titres français, ponctuation (« Zelda Ocarina »), noms raccourcis ;
+    /// - rien de proche : on relâche (sans les mots de 2 lettres, puis débuts de mots pour les fautes).
+    /// Renvoie (nom le plus proche, jeu) du plus proche au moins proche, les plus connus d'abord à égalité.
+    async fn igdb_games(&self, q: &str, limit: usize) -> Vec<(String, Value)> {
+        const FIELDS: &str = "name,alternative_names.name,cover.image_id,first_release_date,platforms.abbreviation,total_rating_count";
+        let clean: String = q.chars().map(|c| if c == '"' || c == '\\' { ' ' } else { c }).collect();
+        let raw: Vec<String> = clean.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).take(8).collect();
+        // Chaque mot : tel quel et sans accents, dans le nom ou un nom alternatif
+        let by_words = |ws: &[String]| -> Option<String> {
+            if ws.is_empty() {
+                return None;
+            }
+            let conds: Vec<String> = ws
+                .iter()
+                .map(|w| {
+                    let mut forms = vec![w.clone(), fold(w)];
+                    forms.dedup();
+                    let alts: Vec<String> = forms.iter().map(|f| format!("name ~ *\"{f}\"* | alternative_names.name ~ *\"{f}\"*")).collect();
+                    format!("({})", alts.join(" | "))
+                })
+                .collect();
+            Some(format!("fields {FIELDS}; where {} & cover != null; sort total_rating_count desc; limit 25;", conds.join(" & ")))
         };
-        let img = |id: &str, size: &str| format!("https://images.igdb.com/igdb/image/upload/{size}/{id}.jpg");
-        games.iter().find_map(|g| {
-            let names = std::iter::once(g["name"].as_str()?).chain(g["alternative_names"].as_array().into_iter().flatten().filter_map(|n| n["name"].as_str()));
-            if !names.into_iter().any(|n| similar(q, n)) {
+        let search = format!("search \"{}\"; fields {FIELDS}; limit 20;", clean.trim());
+        let words_q = by_words(&raw).unwrap_or_default();
+        let (a, b) = tokio::join!(self.igdb_query("games", &search), async {
+            if words_q.is_empty() { None } else { self.igdb_query("games", &words_q).await }
+        });
+        let mut games: Vec<Value> = a.unwrap_or_default();
+        games.extend(b.unwrap_or_default());
+
+        let good = |games: &[Value]| games.iter().any(|g| names_of(g).iter().any(|n| similar(q, n) || contains_all(q, n)));
+        // Relâcher : sans les petits mots (« of », « la »), puis seulement le début des longs mots (fautes)
+        if !good(&games) {
+            let long: Vec<String> = raw.iter().filter(|w| w.chars().count() > 2).cloned().collect();
+            let stems: Vec<String> = long.iter().map(|w| if w.chars().count() >= 6 { w.chars().take(4).collect() } else { w.clone() }).collect();
+            for ws in [long, stems] {
+                if ws.len() == raw.len() && ws == raw {
+                    continue;
+                }
+                if let Some(body) = by_words(&ws) {
+                    games.extend(self.igdb_query("games", &body).await.unwrap_or_default());
+                    if good(&games) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<(String, f64, i64, Value)> = games
+            .into_iter()
+            .filter(|g| seen.insert(g["id"].as_i64().unwrap_or_default()))
+            .map(|g| {
+                let (name, score) = names_of(&g)
+                    .into_iter()
+                    .map(|n| {
+                        let sc = closeness(q, &n) + if contains_all(q, &n) { 0.25 } else { 0.0 };
+                        (n, sc)
+                    })
+                    .max_by(|x, y| x.1.total_cmp(&y.1))
+                    .unwrap_or_default();
+                let pop = g["total_rating_count"].as_i64().unwrap_or(0);
+                (name, score, pop, g)
+            })
+            .collect();
+        out.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.2.cmp(&a.2)));
+        out.into_iter().take(limit).map(|(n, _, _, g)| (n, g)).collect()
+    }
+
+    /// Jaquette IGDB du jeu le plus proche du titre (une erreur → on passe aux autres sources).
+    async fn igdb(&self, q: &str) -> Option<Art> {
+        self.igdb_games(q, 20).await.into_iter().find_map(|(name, g)| {
+            if !similar(q, &name) && !contains_all(q, &name) {
                 return None;
             }
             let cover = g["cover"]["image_id"].as_str()?;
-            let mut a = Art::new(img(cover, "t_cover_big_2x")).fallback(img(cover, "t_cover_big"));
-            a.kind = Some("game".into());
-            Some(a)
+            Some(Art::new(igdb_img(cover, "t_cover_big_2x")).fallback(igdb_img(cover, "t_cover_big")).kind("game"))
         })
     }
 
@@ -484,6 +832,16 @@ impl Artwork {
     }
 }
 
+/// Image importée → JPEG réduit (600 px de large au plus) en data: URL, gardée dans le cache.
+pub fn custom_image(bytes: &[u8]) -> Result<Art, String> {
+    use base64::Engine;
+    let img = image::load_from_memory(bytes).map_err(|_| "Image illisible (formats : JPEG, PNG, WebP)".to_string())?;
+    let img = if img.width() > 600 { img.resize(600, 1800, image::imageops::FilterType::Lanczos3) } else { img };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88).encode_image(&img.to_rgb8()).map_err(|e| e.to_string())?;
+    Ok(Art::new(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(out))))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,8 +852,11 @@ mod tests {
     fn live_igdb() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let art = Artwork::new();
-        for q in ["Time Hollow", "Mario & Sonic at the Olympic Games", "Pokemon Emerald"] {
+        for q in ["Time Hollow", "Mario & Sonic at the Olympic Games", "Mario et Sonic aux Jeux Olympiques d'Hiver", "Pokemon Emerald", "Pokemon Version Emeraude", "zelda ocarina", "higurshi", "Profesor Layton et l'Etrange Village", "Kingdom Hearts Birth be Sleep"] {
             println!("{q} → {:?}", rt.block_on(art.igdb(q)));
+        }
+        for c in rt.block_on(art.choices("game", "Mario et Sonic aux Jeux Olympiques d'Hiver", None, "")) {
+            println!("  {} | {} | {} | {}", c.source, c.title, c.sub, c.url);
         }
     }
 
@@ -523,6 +884,9 @@ mod tests {
 
     #[test]
     fn similarity() {
+        assert!(contains_all("zelda ocarina", "The Legend of Zelda: Ocarina of Time"));
+        assert!(similar("Profeseur Layton et l'Étrange Village", "Professeur Layton et l'Etrange Village"));
+        assert!(!similar("Mario Kart", "Mario Party"));
         assert!(similar("Deadpool and Wolverine", "Deadpool & Wolverine"));
         assert!(similar("JoJos Bizarre Adventure", "JoJo's Bizarre Adventure"));
         assert!(similar("Black Clover", "Black Clover"));

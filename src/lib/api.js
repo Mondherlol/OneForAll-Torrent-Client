@@ -17,6 +17,9 @@ export const scanTorrents = () => invoke("scan_torrents");
 export const trashFiles = (paths) => invoke("trash_files", { paths });
 export const getArtwork = (key, kind, title, year) => invoke("get_artwork", { key, kind, title, year: year ?? null });
 export const forgetArtwork = (key) => invoke("forget_artwork", { key });
+export const artChoices = (kind, title, year) => invoke("art_choices", { kind, title, year: year ?? null });
+/** { url, fallback } d'une proposition, ou { path } d'un fichier, ou { data } (data: URL d'une image collée) */
+export const setArtwork = (key, { url = null, fallback = null, path = null, data = null }) => invoke("set_artwork", { key, url, fallback, path, data });
 export const play = (hashes) => invoke("play", { hashes });
 export const shareTorrents = (hashes) => invoke("share_torrents", { hashes });
 export const trashTorrentFiles = (hash, ids) => invoke("trash_torrent_files", { hash, ids });

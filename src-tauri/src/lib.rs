@@ -1460,6 +1460,36 @@ fn forget_artwork(state: State<'_, AppState>, key: String) {
     state.art.forget(&key);
 }
 
+/// Images proposées pour un titre (fenêtre « Choisir l'image »).
+#[tauri::command]
+async fn art_choices(state: State<'_, AppState>, kind: String, title: String, year: Option<u32>) -> Result<Vec<artwork::Choice>, String> {
+    let mut tmdb = state.cfg().tmdb_key;
+    if tmdb.is_empty() {
+        tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
+    }
+    Ok(state.art.choices(&kind, &title, year, &tmdb).await)
+}
+
+/// Image choisie : une proposition (url), un fichier (path) ou une image collée (data, base64).
+#[tauri::command]
+fn set_artwork(state: State<'_, AppState>, key: String, url: Option<String>, fallback: Option<String>, path: Option<String>, data: Option<String>) -> Result<Art, String> {
+    use base64::Engine;
+    let art = if let Some(url) = url.filter(|u| u.starts_with("http")) {
+        Art { url, fallback, kind: None }
+    } else if let Some(path) = path {
+        artwork::custom_image(&std::fs::read(&path).map_err(|e| format!("Lecture impossible : {e}"))?)?
+    } else if let Some(data) = data {
+        let b64 = data.split_once(",").map(|(_, b)| b).unwrap_or(&data);
+        artwork::custom_image(&base64::engine::general_purpose::STANDARD.decode(b64.trim()).map_err(|_| "Image collée illisible".to_string())?)?
+    } else {
+        return Err("Aucune image".into());
+    };
+    // Le type corrigé auparavant (jeu, animé) est gardé
+    let art = Art { kind: state.art.cached(&key).and_then(|a| a.kind), ..art };
+    state.art.set(&key, art.clone());
+    Ok(art)
+}
+
 // ---------- qBittorrent : lancement ----------
 
 fn qbit_exe(cfg: &Config) -> Option<PathBuf> {
@@ -2154,6 +2184,8 @@ pub fn run() {
             trash_files,
             get_artwork,
             forget_artwork,
+            art_choices,
+            set_artwork,
             get_schedule,
             test_notification,
             open_default_apps,
