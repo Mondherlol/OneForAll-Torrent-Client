@@ -1311,6 +1311,12 @@ fn open_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("Ce fichier n'existe pas (encore).".into());
     }
+    // BD, mangas, livres : SumatraPDF (Windows n'a souvent rien pour les .cbz / .cbr et ouvre
+    // « Choisir une application ») ; « NO_READER » fait proposer son installation
+    let ext = Path::new(&path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if matches!(ext.as_str(), "cbz" | "cbr" | "cb7" | "cbt" | "epub" | "mobi" | "azw3") {
+        return apps::read(Path::new(&path));
+    }
     match shell_open(&path) {
         Ok(()) => Ok(()),
         // Aucune appli associée (ex. .mkv sans lecteur par défaut) : VLC s'il est là
