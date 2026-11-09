@@ -77,6 +77,26 @@ export function buildGroups(items, grouped) {
     if (!g) map.set(key, (g = { key, items: [] }));
     g.items.push(it);
   }
+  // Deux packs (saison complète, intégrale) qui couvrent la même saison sont deux versions
+  // différentes (qualité, release) : chacun sa carte. Les épisodes seuls restent ensemble.
+  if (grouped) {
+    for (const g of [...map.values()]) {
+      const packs = g.items.filter((i) => i.episode == null && (i.kind === "series" || i.kind === "anime"));
+      if (packs.length < 2) continue;
+      const overlap = (a, b) => a.season == null || b.season == null || a.season === b.season;
+      const buckets = [[]];
+      for (const p of packs.sort((a, b) => a.added_on - b.added_on)) {
+        let k = buckets.findIndex((b) => !b.some((x) => overlap(x, p)));
+        if (k < 0) k = buckets.push([]) - 1;
+        buckets[k].push(p);
+      }
+      for (let k = 1; k < buckets.length; k++) {
+        const key = `${g.key}#${buckets[k][0].hash}`;
+        g.items = g.items.filter((i) => !buckets[k].includes(i));
+        map.set(key, { key, items: buckets[k] });
+      }
+    }
+  }
   return [...map.values()].map((g) => {
     const its = g.items.sort((a, b) => (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0) || b.added_on - a.added_on);
     const size = its.reduce((s, i) => s + i.size, 0);
