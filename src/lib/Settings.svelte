@@ -7,7 +7,7 @@
   import { KINDS, THEMES, fmtDate, fmtSize, fmtSpeed } from "./model.js";
   import { confirmAsk, flash, ui } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
-  import { chooseExe, emus, installEmu, loadEmus, removeEmu } from "./emu.svelte.js";
+  import { EMU_ICON, chooseExe, emus, installEmu, loadEmus, removeEmu } from "./emu.svelte.js";
   import { openUrl } from "./api.js";
 
   let { prefs, torrents, tab = $bindable("general"), onclose } = $props();
@@ -417,6 +417,7 @@
         {#each emus.list as e (e.id)}
           {@const pr = emus.progress[e.id]}
           <div class="emu">
+            {#if EMU_ICON[e.id]}<img class="eico" src={EMU_ICON[e.id]} alt="" />{/if}
             <div class="et">
               <b>{e.name}</b>
               <span>{e.consoles}</span>
@@ -563,6 +564,7 @@
   .text:focus, .unit input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
 
   .emus { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .eico { flex: none; width: 36px; height: 36px; border-radius: 9px; object-fit: contain; }
   .emu { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 11px; background: var(--surface); border: 1px solid var(--line); }
   .et { flex: 1; min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
   .et b { font-size: 13.5px; }

@@ -3,6 +3,18 @@ import { listen } from "@tauri-apps/api/event";
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { emuInstall, emuList, emuPlay, emuRemove, emuSetExe } from "./api.js";
 import { flash, ui } from "./ui.svelte.js";
+import ico_azahar from "../assets/emus/azahar.png";
+import ico_dolphin from "../assets/emus/dolphin.png";
+import ico_duckstation from "../assets/emus/duckstation.png";
+import ico_melonds from "../assets/emus/melonds.png";
+import ico_mgba from "../assets/emus/mgba.png";
+import ico_pcsx2 from "../assets/emus/pcsx2.png";
+import ico_ppsspp from "../assets/emus/ppsspp.png";
+import ico_rmg from "../assets/emus/rmg.png";
+import ico_ryujinx from "../assets/emus/ryujinx.png";
+
+/** Icône officielle de chaque émulateur */
+export const EMU_ICON = { azahar: ico_azahar, dolphin: ico_dolphin, duckstation: ico_duckstation, melonds: ico_melonds, mgba: ico_mgba, pcsx2: ico_pcsx2, ppsspp: ico_ppsspp, rmg: ico_rmg, ryujinx: ico_ryujinx };
 
 export const emus = $state({ list: [], progress: {} });
 
