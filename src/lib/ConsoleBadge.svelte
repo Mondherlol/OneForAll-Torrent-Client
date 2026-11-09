@@ -61,6 +61,14 @@
   const c = $derived(id ? C[id] : { label: platform || format.toUpperCase(), color: "#9ca3af", shape: "disc" });
 </script>
 
+{#if c.shape === "psp"}
+  <!-- PSP : le logo seul (lettres à traits fins), sans texte -->
+  <span class="cb logo" class:small title={platform || "PSP"}>
+    <svg viewBox="-1 -1 62 20" width={small ? 34 : 43} height={small ? 11 : 14} aria-label="PSP">
+      <path d="M1 17.5V1h14v8.5H4.5M38 1H22v8.5h16v8H22M45 17.5V1h14v8.5H48.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="miter" />
+    </svg>
+  </span>
+{:else}
 <span class="cb" class:small style="--c:{c.color}" title={platform || c.label}>
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
     {#if c.shape === "clam"}
@@ -85,15 +93,6 @@
       <path d="M3.8 12h2.4M5 10.8v2.4" stroke="currentColor" stroke-width="1.3" />
       <circle cx="19" cy="11.2" r="1" fill="currentColor" />
       <circle cx="18" cy="13.2" r="1" fill="currentColor" />
-    {:else if c.shape === "psp"}
-      <!-- PSP : corps arrondi, grand écran, croix à gauche, 4 boutons à droite -->
-      <path d="M6.5 6.5h11a5.5 5.5 0 0 1 0 11h-11a5.5 5.5 0 0 1 0-11Z" fill="currentColor" fill-opacity="0.14" stroke="currentColor" stroke-width="1.5" />
-      <rect x="7.6" y="8.4" width="8.8" height="7.2" rx="0.8" fill="var(--c)" />
-      <path d="M2.9 12h2.8M4.3 10.6v2.8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-      <circle cx="19.7" cy="10.8" r="0.65" fill="currentColor" />
-      <circle cx="19.7" cy="13.2" r="0.65" fill="currentColor" />
-      <circle cx="18.5" cy="12" r="0.65" fill="currentColor" />
-      <circle cx="20.9" cy="12" r="0.65" fill="currentColor" />
     {:else if c.shape === "remote"}
       <rect x="8" y="2" width="8" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
       <path d="M10.5 6.5h3M12 5v3" stroke="var(--c)" stroke-width="1.6" />
@@ -110,6 +109,7 @@
   </svg>
   <b>{c.label}</b>
 </span>
+{/if}
 
 <style>
   .cb {
@@ -127,6 +127,8 @@
     white-space: nowrap;
   }
   .cb svg { flex: none; }
+  .cb.logo { padding: 0 11px; background: linear-gradient(135deg, #0b1d4a, #050b1f); border-color: rgb(120 160 255 / 0.35); }
+  .cb.logo.small { padding: 0 8px; }
   .cb.small { height: 20px; padding: 0 7px 0 4px; gap: 4px; box-shadow: none; background: #1b1f2a; }
   .cb.small b { font-size: 10.5px; }
   .cb b { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
