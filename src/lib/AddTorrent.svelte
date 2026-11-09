@@ -323,6 +323,19 @@
       }
     });
   });
+  // Une licence une seule fois (la version la plus partagée, la liste étant déjà triée) :
+  // même jaquette trouvée ou même titre nettoyé = même licence
+  function uniqPop(list) {
+    const seen = new Set();
+    return list
+      .filter((r) => {
+        const keys = [r.art_key, (r.clean || r.title).toLowerCase(), arts[r.art_key]?.url].filter(Boolean);
+        if (keys.some((k) => seen.has(k))) return false;
+        keys.forEach((k) => seen.add(k));
+        return true;
+      })
+      .slice(0, 24);
+  }
   function openTrend(t) {
     query = t.query;
     search();
@@ -574,7 +587,7 @@
               </div>
             {/if}
 
-            {#if CATALOG[genre]}
+            {#if CATALOG[genre] && source === "all"}
               <section class="strip-sec">
                 <h4><Icon name="calendar" size={14} />Tendances de la semaine <small>{CATALOG[genre]}</small></h4>
                 <Carousel>
@@ -606,7 +619,7 @@
                     {:else if p.error}
                       <p class="s-empty">{p.error}</p>
                     {:else}
-                      {#each p as r (r.url || r.page)}
+                      {#each uniqPop(p) as r (r.url || r.page)}
                         {@const art = arts[r.art_key]}
                         <button class="tcard" use:lazyArt={r} onclick={() => openPop(r)} title={r.title}>
                           <span class="tc-img">
@@ -623,7 +636,7 @@
               {/if}
             {/each}
 
-            {#if !CATALOG[genre] && !popSites.length}
+            {#if !(CATALOG[genre] && source === "all") && !popSites.length}
               <div class="welcome">
                 <span class="w-ic"><Icon name={GENRES.find((g) => g.id === genre).icon} size={30} /></span>
                 <h3>Que veux-tu télécharger ?</h3>

@@ -902,7 +902,7 @@ pub fn nyaa_parse_html(html: &str) -> Vec<SearchResult> {
             r.category = String::new();
             Some(enrich(r))
         })
-        .take(24)
+        .take(100)
         .collect()
 }
 

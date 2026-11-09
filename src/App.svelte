@@ -16,7 +16,7 @@
   import PickFiles from "./lib/PickFiles.svelte";
   import Downloads from "./lib/Downloads.svelte";
   import Studio from "./lib/Studio.svelte";
-  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan } from "./lib/api.js";
+  import { getDownloads, emuDetect, downloadAction, dlExtract, romLibrary, romScan, trashPath } from "./lib/api.js";
   import { play as playGame } from "./lib/emu.svelte.js";
   import logo from "./assets/logo.png";
   import { upd, checkUpdates, installUpdate } from "./lib/updates.svelte.js";
@@ -757,6 +757,38 @@
     clickTimer = setTimeout(() => (selectedKey = g.key), 220);
   }
 
+  // Cartes hors torrent : Ctrl+clic pour sélectionner (pas de panneau de détails)
+  function extraClick(e, g) {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const s = new Set(sel);
+      s.has(g.key) ? s.delete(g.key) : s.add(g.key);
+      sel = s;
+    } else if (sel.size) sel = new Set();
+  }
+  const selExtra = $derived(dlCards.filter((g) => sel.has(g.key)));
+  function hideSelected() {
+    for (const g of selExtra) g.rom ? hideRom(g.rom) : downloadAction([g.dl.id], "delete").catch(() => {});
+    sel = new Set();
+    refreshDownloads();
+  }
+  async function trashSelected() {
+    const n = selExtra.length;
+    const size = selExtra.reduce((a, g) => a + (g.size || 0), 0);
+    if (!(await confirmAsk(`Supprimer ${n} jeu${n > 1 ? "x" : ""} ?`, `${fmtSize(size)} mis à la corbeille.`, "Supprimer", true))) return;
+    for (const g of selExtra) {
+      try {
+        if (g.rom) {
+          await trashPath(g.rom.path);
+          romLib = romLib.filter((r) => r.path !== g.rom.path);
+        } else await downloadAction([g.dl.id], "delete_files");
+      } catch (e) {
+        flash(String(e));
+      }
+    }
+    sel = new Set();
+    refreshDownloads();
+  }
+
   function cardDbl(e, g) {
     clearTimeout(clickTimer);
     if (e.ctrlKey || e.shiftKey || e.metaKey) return;
@@ -807,7 +839,7 @@
     } else if (!typing && !settingsOpen && !selectedKey && e.ctrlKey && e.key.toLowerCase() === "a") {
       e.preventDefault();
       sel = new Set(visible.map((g) => g.key));
-    } else if (!typing && !settingsOpen && e.key === "Delete" && sel.size) {
+    } else if (!typing && !settingsOpen && e.key === "Delete" && selItems.length) {
       remove(selItems, e.shiftKey);
     } else if (!typing && !settingsOpen && /^[1-9]$/.test(e.key) && KINDS[Number(e.key) - 1]) {
       prefs.kind = KINDS[Number(e.key) - 1].id;
@@ -1022,9 +1054,9 @@
             {#each dlCards as g (g.key)}
               <div class="cell" animate:flip={{ duration: 280 }}>
                 {#if g.rom}
-                  <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => romPlay(g.rom)} oncontext={(e) => romCardMenu(e, g)} onaction={(n) => n === "reveal" && reveal(g.rom.path, null).catch((e) => flash(String(e)))} />
+                  <Card group={g} sort={prefs.sort} selected={sel.has(g.key)} onclick={(e) => extraClick(e, g)} ondblclick={() => romPlay(g.rom)} oncontext={(e) => romCardMenu(e, g)} onaction={(n) => n === "reveal" && reveal(g.rom.path, null).catch((e) => flash(String(e)))} />
                 {:else}
-                  <Card group={g} sort={prefs.sort} onclick={() => {}} ondblclick={() => dlPlay(g.dl)} oncontext={(e) => dlCardMenu(e, g)} onaction={dlCardAction(g.dl)} />
+                  <Card group={g} sort={prefs.sort} selected={sel.has(g.key)} onclick={(e) => extraClick(e, g)} ondblclick={() => dlPlay(g.dl)} oncontext={(e) => dlCardMenu(e, g)} onaction={dlCardAction(g.dl)} />
                 {/if}
               </div>
             {/each}
@@ -1045,6 +1077,7 @@
 {#if sel.size}
   <div class="selbar" transition:fly={{ y: 20, duration: 160 }}>
     <span class="count"><Icon name="select" size={15} />{sel.size} sélectionné{sel.size > 1 ? "s" : ""}</span>
+    {#if selItems.length}
     <button onclick={() => onaction("pause", selItems)}><Icon name="pause" size={14} />Pause</button>
     <button onclick={() => onaction("resume", selItems)}><Icon name="play" size={14} />Reprendre</button>
     <button onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); loadCategories(); openMenu({ preventDefault() {}, stopPropagation() {}, clientX: r.left, clientY: r.top - 8 }, categoryMenu(selItems).sub); }}><Icon name="tag" size={14} />Catégorie</button>
@@ -1052,6 +1085,10 @@
     <button onclick={() => share(selItems)}><Icon name="share" size={14} />Partager</button>
     <button class="danger" onclick={() => remove(selItems, false)}><Icon name="close" size={14} />Retirer</button>
     <button class="danger" onclick={() => remove(selItems, true)}><Icon name="trash" size={14} />Supprimer</button>
+    {:else}
+    <button onclick={hideSelected}><Icon name="close" size={14} />Masquer</button>
+    <button class="danger" onclick={trashSelected}><Icon name="trash" size={14} />Supprimer</button>
+    {/if}
     <button class="x" title="Désélectionner (Échap)" onclick={() => (sel = new Set())}><Icon name="close" size={14} /></button>
   </div>
 {/if}

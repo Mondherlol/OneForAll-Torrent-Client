@@ -152,7 +152,15 @@ pub fn scan(progress: impl Fn(u64, u64) + Sync) -> Vec<LocalRom> {
                     platform: emu::platform_of(m.id).to_string(),
                     emu: m.id.to_string(),
                     size: meta.len(),
-                    added_on: meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0),
+                    // Arrivée sur le PC : la plus récente des dates de création et de modification
+                    // (une ROM extraite garde souvent la date d'origine du jeu, « il y a 30 ans »)
+                    added_on: [meta.created().ok(), meta.modified().ok()]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .max()
+                        .unwrap_or(0),
                 })
             })
             .collect();
