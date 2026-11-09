@@ -9,10 +9,12 @@
   import { flash } from "./ui.svelte.js";
   import icoVlc from "../assets/emus/vlc.png";
   import icoReader from "../assets/emus/reader.png";
+  import icoComics from "../assets/emus/comics.png";
 
   const APPS = {
     vlc: { name: "VLC", ico: icoVlc, what: "Il faut un lecteur vidéo pour regarder ça.", desc: "Le lecteur vidéo qui lit tout : sous-titres, pistes audio, reprise. OneForAll s'en sert pour suivre tes épisodes.", act: "Installer VLC et lire" },
-    reader: { name: "SumatraPDF", ico: icoReader, what: "Il faut un lecteur pour lire ça.", desc: "Léger et rapide : BD, mangas, comics et livres (CBZ, CBR, EPUB, MOBI, PDF).", act: "Installer et lire" },
+    comics: { name: "YACReader", ico: icoComics, what: "Il faut un lecteur de BD pour lire ça.", desc: "Le lecteur de BD, mangas et comics : double page, sens de lecture manga, reprise où tu t’es arrêté (CBZ, CBR, CB7, PDF).", act: "Installer YACReader et lire" },
+    reader: { name: "SumatraPDF", ico: icoReader, what: "Il faut un lecteur pour lire ce livre.", desc: "Léger et rapide, pour les livres EPUB et MOBI.", act: "Installer et lire" },
   };
   const app = $derived(APPS[need.app]);
   let prog = $state(null);
@@ -58,7 +60,7 @@
   <button class="btn primary big" disabled={!!prog} onclick={go}>
     {#if prog}<span class="spin"></span>Installation…{:else}<Icon name="play" size={17} />{app.act}{/if}
   </button>
-  <small class="note">Version portable, installée pour toi seul (sans droits administrateur).</small>
+  <small class="note">Installé pour toi seul, sans droits administrateur.</small>
 </div>
 
 <style>

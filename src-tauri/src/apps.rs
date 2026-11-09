@@ -43,11 +43,84 @@ pub fn reader() -> Option<PathBuf> {
     c.into_iter().find(|p| p.is_file()).or_else(|| crate::emu::find_exe(&root().join("reader"), "sumatrapdf"))
 }
 
+/// YACReader (BD, mangas, comics) du PC, sinon celui installé par OneForAll
+pub fn comics() -> Option<PathBuf> {
+    let mut c = vec![root().join("yacreader").join("YACReader.exe")];
+    for var in ["ProgramFiles", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            c.push(Path::new(&base).join("YACReader").join("YACReader.exe"));
+            c.push(Path::new(&base).join("Programs").join("YACReader").join("YACReader.exe"));
+        }
+    }
+    c.into_iter().find(|p| p.is_file())
+}
+
 pub fn list() -> Vec<AppInfo> {
     vec![
         AppInfo { id: "vlc", name: "VLC", what: "Vidéos et musique", exe: vlc().map(|p| p.display().to_string()) },
-        AppInfo { id: "reader", name: "SumatraPDF", what: "BD, mangas et livres (CBZ, CBR, EPUB, PDF…)", exe: reader().map(|p| p.display().to_string()) },
+        AppInfo { id: "comics", name: "YACReader", what: "BD, mangas et comics (CBZ, CBR, CB7, PDF)", exe: comics().map(|p| p.display().to_string()) },
+        AppInfo { id: "reader", name: "SumatraPDF", what: "Livres (EPUB, MOBI)", exe: reader().map(|p| p.display().to_string()) },
     ]
+}
+
+/// YACReader n'existe pas en portable pour Windows : son installateur (Inno Setup) en silencieux,
+/// pour l'utilisateur seul, dans le dossier des apps de OneForAll
+async fn install_comics(client: &reqwest::Client, note: &impl Fn(u32, &str)) -> Result<PathBuf, String> {
+    use std::io::Write;
+    note(0, "Recherche de la dernière version…");
+    let v: serde_json::Value = client
+        .get("https://api.github.com/repos/YACReader/yacreader/releases/latest")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let url = v["assets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| a["browser_download_url"].as_str())
+        .find(|u| u.contains("-winx64") && u.ends_with(".exe"))
+        .ok_or("Version Windows de YACReader introuvable")?
+        .to_string();
+    std::fs::create_dir_all(root()).map_err(|e| e.to_string())?;
+    let setup = root().join("yacreader-setup.exe");
+    let mut res = client.get(&url).send().await.map_err(|e| format!("Téléchargement impossible : {e}"))?;
+    let total = res.content_length().unwrap_or(0);
+    let mut f = std::fs::File::create(&setup).map_err(|e| e.to_string())?;
+    let (mut got, mut last) = (0u64, u32::MAX);
+    while let Some(b) = tokio::time::timeout(Duration::from_secs(30), res.chunk())
+        .await
+        .map_err(|_| "Téléchargement bloqué (plus de réponse)".to_string())?
+        .map_err(|e| format!("Téléchargement interrompu : {e}"))?
+    {
+        f.write_all(&b).map_err(|e| e.to_string())?;
+        got += b.len() as u64;
+        let pct = if total > 0 { (got * 100 / total) as u32 } else { 0 };
+        if pct != last {
+            last = pct;
+            note(pct, "Téléchargement…");
+        }
+    }
+    drop(f);
+    note(100, "Installation…");
+    let dir = root().join("yacreader");
+    let (s, d) = (setup.clone(), dir.clone());
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(&s)
+            .args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/NOICONS"])
+            .arg(format!("/DIR={}", d.display()))
+            .status()
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| format!("Installation impossible : {e}"))?;
+    let _ = std::fs::remove_file(&setup);
+    if !status.success() {
+        return Err(format!("L'installation de YACReader a échoué (code {:?})", status.code()));
+    }
+    comics().ok_or_else(|| "YACReader installé, mais introuvable.".into())
 }
 
 /// Lien de la dernière version portable
@@ -79,6 +152,9 @@ async fn latest(client: &reqwest::Client, id: &str) -> Result<String, String> {
 pub async fn install(id: &str, note: impl Fn(u32, &str)) -> Result<PathBuf, String> {
     use std::io::Write;
     let client = reqwest::Client::builder().user_agent("OneForAll").connect_timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+    if id == "comics" {
+        return install_comics(&client, &note).await;
+    }
     note(0, "Recherche de la dernière version…");
     let url = latest(&client, id).await?;
     std::fs::create_dir_all(root()).map_err(|e| e.to_string())?;
@@ -125,8 +201,8 @@ pub async fn install(id: &str, note: impl Fn(u32, &str)) -> Result<PathBuf, Stri
 }
 
 /// Ouvre un livre (ou un dossier de livres : le premier) dans SumatraPDF
+/// BD / mangas / comics dans YACReader (« NO_COMICS » s’il manque), livres EPUB / MOBI dans SumatraPDF (« NO_READER »)
 pub fn read(path: &Path) -> Result<(), String> {
-    let exe = reader().ok_or("NO_READER")?;
     let target = if path.is_dir() {
         walkdir::WalkDir::new(path)
             .max_depth(4)
@@ -139,6 +215,8 @@ pub fn read(path: &Path) -> Result<(), String> {
     } else {
         path.to_path_buf()
     };
+    let ext = target.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let exe = if matches!(ext.as_str(), "epub" | "mobi" | "azw3") { reader().ok_or("NO_READER")? } else { comics().ok_or("NO_COMICS")? };
     std::process::Command::new(exe).arg(&target).spawn().map(|_| ()).map_err(|e| format!("Lancement impossible : {e}"))
 }
 
