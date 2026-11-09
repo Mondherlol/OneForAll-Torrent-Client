@@ -555,13 +555,13 @@ async fn rom_versions(page: String) -> Result<Vec<search::RomVersion>, String> {
 
 /// Ajoute une version RomsFun à l'onglet DL (lien direct de la page).
 #[tauri::command]
-async fn rom_download(state: State<'_, AppState>, page: String) -> Result<String, String> {
+async fn rom_download(state: State<'_, AppState>, page: String, title: String, platform: String, thumb: String) -> Result<String, String> {
     if !page.starts_with("https://romsfun.com/download/") {
         return Err("Lien RomsFun invalide".into());
     }
     let client = reqwest::Client::builder().user_agent("OneForAll/0.6").timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
     let link = search::romsfun_link(&client, &page).await?;
-    Ok(state.direct.add(&link))
+    Ok(state.direct.add_game(&link, &title, &platform, &thumb))
 }
 
 /// Liens d'hébergeurs d'une page NXBrew (jeu, mise à jour, DLC).
@@ -629,6 +629,9 @@ fn looks_like_torrent(url: &str, r: &reqwest::Response) -> bool {
 
 #[derive(Serialize)]
 struct DirectView {
+    /// Console (jeu d'un site de ROM) et ROM extraite de l'archive
+    platform: String,
+    rom: String,
     id: String,
     url: String,
     name: String,
@@ -685,7 +688,15 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
                     _ => raw.name.clone(),
                 };
             }
+            // Jeu d'un site de ROM : son vrai titre (pas le nom du .zip), donc la bonne jaquette
+            if !d.game.is_empty() {
+                m.kind = Kind::Game;
+                m.title = d.game.clone();
+                m.group_key = format!("game:{}", media::normalize(&d.game));
+            }
             DirectView {
+                platform: d.platform.clone(),
+                rom: d.rom.clone(),
                 media: d.media.clone(),
                 media_label: match d.media.as_str() {
                     "" => String::new(),
@@ -1942,6 +1953,16 @@ fn emu_detect(path: String) -> emu::Rom {
     emu::rom_info(std::path::Path::new(&path))
 }
 
+/// Extrait l'archive d'un téléchargement (ROM .zip / .7z) à côté d'elle et retient la ROM.
+#[tauri::command]
+async fn dl_extract(state: State<'_, AppState>, id: String) -> Result<emu::Rom, String> {
+    let d = state.direct.get(&id).ok_or("Téléchargement introuvable")?;
+    let path = d.final_path();
+    let rom = tokio::task::spawn_blocking(move || emu::unpack(&path)).await.map_err(|e| e.to_string())??;
+    state.direct.set_rom(&id, &rom.display().to_string());
+    Ok(emu::rom_info(&rom))
+}
+
 #[tauri::command]
 fn emu_find_roms(path: String) -> Vec<emu::Rom> {
     emu::find_roms(std::path::Path::new(&path))
@@ -2154,6 +2175,7 @@ pub fn run() {
             emu_take_pending,
             rom_versions,
             rom_download,
+            dl_extract,
             get_torrents,
             torrent_action,
             get_files,

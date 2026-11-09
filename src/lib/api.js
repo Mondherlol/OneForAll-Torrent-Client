@@ -72,4 +72,6 @@ export const emuSetExe = (id, exe) => invoke("emu_set_exe", { id, exe });
 export const emuRemove = (id) => invoke("emu_remove", { id });
 export const emuTakePending = () => invoke("emu_take_pending");
 export const romVersions = (page) => invoke("rom_versions", { page });
-export const romDownload = (page) => invoke("rom_download", { page });
+/** meta : { title, platform, thumb } du jeu (titre, console et jaquette dans l'onglet DL) */
+export const romDownload = (page, meta = {}) => invoke("rom_download", { page, title: meta.title ?? "", platform: meta.platform ?? "", thumb: meta.thumb ?? "" });
+export const dlExtract = (id) => invoke("dl_extract", { id });

@@ -169,7 +169,7 @@ fn detect_archive(p: &Path) -> Option<&'static Emu> {
 }
 
 /// Décompresse l'archive à côté d'elle (une seule fois) et renvoie la ROM à lancer.
-fn unpack(p: &Path) -> Result<PathBuf, String> {
+pub fn unpack(p: &Path) -> Result<PathBuf, String> {
     let dir = p.with_extension("");
     if !dir.is_dir() {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;

@@ -1,6 +1,6 @@
 <script>
   // Badge de console posé sur la jaquette : silhouette de la console + son nom, aux couleurs de la marque.
-  let { format = "", platform = "" } = $props();
+  let { format = "", platform = "", small = false } = $props();
 
   // Extension (format) → console : plus précis que la plateforme (GBA ≠ Game Boy)
   const BY_EXT = {
@@ -13,7 +13,29 @@
     cso: "psp",
     pkg: "ps", pbp: "psp", chd: "retro",
   };
-  const BY_PLATFORM = { switch: "switch", "3ds": "3ds", ds: "ds", "game boy": "gb", wii: "wii", "wii u": "wiiu", psp: "psp", playstation: "ps" };
+  // Nom de console (sites de ROM : « Nintendo DS », « Game Boy Advance », « PlayStation 2 (PS2) »…)
+  function byPlatform(p) {
+    const x = p.toLowerCase();
+    if (/3ds/.test(x)) return "3ds";
+    if (/switch/.test(x)) return "switch";
+    if (/\bds\b|nds/.test(x)) return "ds";
+    if (/advance|gba/.test(x)) return "gba";
+    if (/color|gbc/.test(x)) return "gbc";
+    if (/game ?boy|\bgb\b/.test(x)) return "gb";
+    if (/wii ?u/.test(x)) return "wiiu";
+    if (/wii/.test(x)) return "wii";
+    if (/gamecube|\bgc\b|ngc/.test(x)) return "gc";
+    if (/psp|portable/.test(x)) return "psp";
+    if (/ps ?2|playstation 2/.test(x)) return "ps2";
+    if (/ps ?3|playstation 3/.test(x)) return "ps3";
+    if (/ps ?4|playstation 4/.test(x)) return "ps4";
+    if (/ps ?1|psx|playstation/.test(x)) return "ps";
+    if (/n64|nintendo 64/.test(x)) return "n64";
+    if (/snes|super nintendo|super famicom/.test(x)) return "snes";
+    if (/\bnes\b|famicom/.test(x)) return "nes";
+    if (/mega ?drive|genesis/.test(x)) return "md";
+    return null;
+  }
   const C = {
     switch: { label: "Switch", color: "#e60012", shape: "switch" },
     "3ds": { label: "3DS", color: "#d6001c", shape: "clam" },
@@ -24,14 +46,22 @@
     wii: { label: "Wii", color: "#5bc0f8", shape: "remote" },
     wiiu: { label: "Wii U", color: "#00a7e1", shape: "pad" },
     psp: { label: "PSP", color: "#4c8dff", shape: "psp" },
-    ps: { label: "PlayStation", color: "#2e6cff", shape: "disc" },
+    ps: { label: "PS1", color: "#2e6cff", shape: "disc" },
+    ps2: { label: "PS2", color: "#2e6cff", shape: "disc" },
+    ps3: { label: "PS3", color: "#2e6cff", shape: "disc" },
+    ps4: { label: "PS4", color: "#2e6cff", shape: "disc" },
+    gc: { label: "GameCube", color: "#7c3aed", shape: "disc" },
+    n64: { label: "N64", color: "#16a34a", shape: "pad" },
+    snes: { label: "SNES", color: "#8b5cf6", shape: "pad" },
+    nes: { label: "NES", color: "#dc2626", shape: "pad" },
+    md: { label: "Mega Drive", color: "#111827", shape: "pad" },
     retro: { label: "Rétro", color: "#f59e0b", shape: "disc" },
   };
-  const id = $derived(BY_EXT[format.toLowerCase()] ?? BY_PLATFORM[platform.toLowerCase()] ?? null);
+  const id = $derived(BY_EXT[(format ?? "").toLowerCase()] ?? byPlatform(platform) ?? null);
   const c = $derived(id ? C[id] : { label: platform || format.toUpperCase(), color: "#9ca3af", shape: "disc" });
 </script>
 
-<span class="cb" style="--c:{c.color}" title={platform || c.label}>
+<span class="cb" class:small style="--c:{c.color}" title={platform || c.label}>
   <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
     {#if c.shape === "clam"}
       <!-- Console à clapet : deux écrans -->
@@ -91,5 +121,7 @@
     white-space: nowrap;
   }
   .cb svg { flex: none; }
+  .cb.small { height: 20px; padding: 0 7px 0 4px; gap: 4px; box-shadow: none; background: #1b1f2a; }
+  .cb.small b { font-size: 10.5px; }
   .cb b { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
 </style>

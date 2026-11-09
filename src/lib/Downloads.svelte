@@ -6,8 +6,9 @@
   import DlOptions from "./DlOptions.svelte";
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
-  import { arts, confirmAsk, flash, openMenu, openStudio, wantArt } from "./ui.svelte.js";
-  import { emuDetect } from "./api.js";
+  import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, wantArt } from "./ui.svelte.js";
+  import { dlExtract, emuDetect } from "./api.js";
+  import ConsoleBadge from "./ConsoleBadge.svelte";
   import { emuById, play } from "./emu.svelte.js";
 
   /** downloads : liste de get_downloads ; onrefresh : recharge la liste tout de suite ; prefill : lien collé dans la recherche */
@@ -105,13 +106,36 @@
   // ROM téléchargée (.nds, .gba… ou .zip / .7z qui en contient une) → bouton « Jouer »
   const ROMISH = /\.(zip|7z|nds|dsi|gba|gbc?|3ds|cia|cci|cso|chd|pbp|iso|cue|rvz|wbfs|gcz|nsp|xci)$/i;
   let roms = $state({}); // chemin → ROM détectée (null = pas un jeu)
+  // La ROM extraite si elle existe, sinon le fichier téléchargé (archive comprise)
+  const romPath = (d) => d.rom || d.path;
+  const romOf = (d) => roms[romPath(d)];
   $effect(() => {
     for (const d of downloads) {
-      if (d.st !== "done" || !d.path || !ROMISH.test(d.name) || d.path in roms) continue;
-      roms[d.path] = null;
-      emuDetect(d.path).then((r) => (roms[d.path] = r.emu ? r : null)).catch(() => {});
+      const p = romPath(d);
+      if (d.st !== "done" || !p || !(d.rom || ROMISH.test(d.name)) || p in roms) continue;
+      roms[p] = null;
+      emuDetect(p).then((r) => (roms[p] = r.emu ? r : null)).catch(() => {});
     }
   });
+  const isGame = (d) => d.kind === "game" || !!d.platform;
+  const isArchive = (d) => /\.(zip|7z)$/i.test(d.name);
+  let extracting = $state(null);
+  async function extract(d) {
+    extracting = d.id;
+    try {
+      const rom = await dlExtract(d.id);
+      roms[rom.path] = rom.emu ? rom : null;
+      flash(`Extrait : ${rom.name}`);
+      onrefresh();
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      extracting = null;
+    }
+  }
+  // Double-clic : un jeu se lance, le reste s'ouvre
+  const dbl = (d) => (d.st === "done" && romOf(d) ? play(romOf(d)) : openItem(d));
+  const artFor = (d) => ({ artKey: d.art_key, kind: d.kind, title: d.title, year: d.year });
 
   const isVideoFile = (d) => d.st === "done" && /\.(mp4|mkv|webm|mov|avi|m4v)$/i.test(d.name);
 
@@ -186,6 +210,8 @@
 
   function menu(e, d) {
     openMenu(e, [
+      d.st === "done" && romOf(d) && { label: `Jouer avec ${emuById(romOf(d).emu)?.name ?? "l'émulateur"}`, icon: "game", run: () => play(romOf(d)) },
+      d.st === "done" && isArchive(d) && !d.rom && romOf(d) && { label: "Extraire le jeu", icon: "layers", run: () => extract(d) },
       d.st === "done" && { label: "Ouvrir", icon: "open", run: () => openPath(d.path).catch((err) => flash(String(err))) },
       web(d) && { label: "Ouvrir la vidéo d'origine", icon: "open", run: () => openUrl(d.url).catch((err) => flash(String(err))) },
       isVideoFile(d) && { label: "Capturer un extrait…", icon: "scissors", run: () => openStudio(d.path) },
@@ -197,6 +223,7 @@
       d.st === "error" && { label: "Réessayer", icon: "refresh", run: () => act([d], "resume") },
       { label: "Déplacer…", icon: "move", run: () => moveTo(d) },
       { label: "Copier le lien", icon: "copy", run: () => copy(d.url) },
+      !d.media && { label: "Choisir l'image…", icon: "image", run: () => pickArt(artFor(d)) },
       "-",
       { label: "Retirer de la liste", icon: "close", run: () => remove(d, false) },
       d.done > 0 && { label: "Supprimer avec le fichier", icon: "trash", danger: true, run: () => remove(d, true) },
@@ -261,18 +288,24 @@
       {#each shown as d (d.id)}
         {@const art = arts[d.art_key]}
         {@const pct = Math.floor(d.progress * 1000) / 10}
-        <li class="st-{d.st}" class:retry={d.retrying} in:fly={{ y: 6, duration: 140 }} oncontextmenu={(e) => menu(e, d)} ondblclick={() => openItem(d)}>
+        <li class="st-{d.st}" class:retry={d.retrying} class:game={isGame(d)} in:fly={{ y: 6, duration: 140 }} oncontextmenu={(e) => menu(e, d)} ondblclick={() => dbl(d)}>
           <span class="thumb k-{d.kind}" class:wide={d.media}>
-            {#if d.thumb}<img src={d.thumb} alt="" referrerpolicy="no-referrer" />
+            {#if isGame(d) && art?.url}<img src={art.url} alt="" />
+            {:else if d.thumb}<img src={d.thumb} alt="" referrerpolicy="no-referrer" />
             {:else if art?.url && !d.media}<img src={art.url} alt="" />
             {:else}<Icon name={d.media ? (d.media === "mp3" ? "audio" : "film") : d.kind} size={18} />{/if}
           </span>
           <div class="main">
             <div class="top">
               <span class="title" title={d.name}>{d.title || d.name}</span>
-              {#if d.media}<span class="kb fmt">{d.media_label}</span>{#if d.section_label}<span class="kb cutb" title="Extrait seulement"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}{:else}<span class="kb">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
+              {#if d.media}<span class="kb fmt">{d.media_label}</span>{#if d.section_label}<span class="kb cutb" title="Extrait seulement"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}{:else}<span class="kb k-{d.kind}">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
+              {#if d.platform}<ConsoleBadge platform={d.platform} small />{/if}
             </div>
-            <span class="fname" class:site={d.media} title={d.media === "clip" ? "" : d.url}>{origin(d)}</span>
+            {#if d.rom}
+              <span class="fname rom" title={d.rom}><Icon name="game" size={12} />{d.rom.split(/[\\/]/).pop()}</span>
+            {:else}
+              <span class="fname" class:site={d.media} title={d.media === "clip" ? "" : d.url}>{origin(d)}</span>
+            {/if}
             {#if d.st !== "done"}
               <div class="pbar"><span style="width:{pct}%"></span></div>
             {/if}
@@ -295,8 +328,13 @@
               <button class="ib hot" title="Reprendre" onclick={() => act([d], "resume")}><Icon name="play" size={15} /></button>
             {:else if d.st === "error"}
               <button class="ib" title="Réessayer" onclick={() => act([d], "resume")}><Icon name="refresh" size={15} /></button>
-            {:else if roms[d.path]}
-              <button class="ib hot" title="Jouer avec {emuById(roms[d.path].emu)?.name ?? 'l\'émulateur'}" onclick={() => play(roms[d.path])}><Icon name="game" size={15} /></button>
+            {:else if romOf(d)}
+              {#if isArchive(d) && !d.rom}
+                <button class="tb" disabled={extracting === d.id} title="Décompresser l'archive à côté d'elle : le jeu est prêt à lancer" onclick={() => extract(d)}>
+                  {#if extracting === d.id}<span class="spin"></span>Extraction…{:else}<Icon name="layers" size={14} />Extraire{/if}
+                </button>
+              {/if}
+              <button class="tb play" title="Jouer avec {emuById(romOf(d).emu)?.name ?? 'l\'émulateur'}" onclick={() => play(romOf(d))}><Icon name="play" size={14} />Jouer</button>
             {:else}
               <button class="ib" title="Ouvrir" onclick={() => openItem(d)}><Icon name="open" size={15} /></button>
             {/if}
@@ -378,7 +416,14 @@
   .retry .stxt, .st-paused .stxt { color: #d97706; font-weight: 600; }
   .st-done .stxt { color: var(--ok); }
   .nores { font-size: 11px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 5px; padding: 0 5px; }
-  .acts { display: flex; gap: 2px; flex: none; }
+  .acts { display: flex; align-items: center; gap: 2px; flex: none; }
+  .tb { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; margin-right: 4px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-2); font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; }
+  .tb:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .tb.play { background: #16a34a; border-color: #16a34a; color: white; }
+  .tb.play:hover { background: #15803d; color: white; }
+  li.game .thumb { width: 50px; height: 70px; box-shadow: 0 3px 10px rgb(0 0 0 / 0.18); }
+  .fname.rom { display: inline-flex; align-items: center; gap: 5px; color: #16a34a; font-weight: 600; }
+  .kb.k-game { background: rgb(22 163 74 / 0.12); color: #16a34a; }
   .ib { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text-2); cursor: pointer; }
   .ib:hover { background: var(--chip); color: var(--text); }
   .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 20px; color: var(--muted); text-align: center; }

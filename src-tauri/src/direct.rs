@@ -80,6 +80,11 @@ pub struct Dl {
     pub res: String,
     /// Compression : taille visée en octets
     pub target: i64,
+    /// Jeu (site de ROM) : son vrai titre et sa console
+    pub game: String,
+    pub platform: String,
+    /// ROM extraite de l'archive (prête à lancer)
+    pub rom: String,
 }
 
 impl Dl {
@@ -497,6 +502,24 @@ impl Direct {
 
     pub fn get(&self, id: &str) -> Option<Dl> {
         self.0.list.lock().unwrap().iter().find(|d| d.id == id).cloned()
+    }
+
+    /// Jeu d'un site de ROM : titre, console et jaquette connus d'avance
+    pub fn add_game(&self, url: &str, game: &str, platform: &str, thumb: &str) -> String {
+        let id = self.add(url);
+        self.update(&id, |d| {
+            d.game = game.trim().to_string();
+            d.platform = platform.trim().to_string();
+            d.thumb = thumb.trim().to_string();
+        });
+        self.save();
+        id
+    }
+
+    /// ROM extraite de l'archive téléchargée
+    pub fn set_rom(&self, id: &str, rom: &str) {
+        self.update(id, |d| d.rom = rom.to_string());
+        self.save();
     }
 
     pub fn add(&self, url: &str) -> String {

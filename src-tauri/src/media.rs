@@ -244,7 +244,7 @@ fn status_of(state: &str) -> Status {
     }
 }
 
-fn normalize(s: &str) -> String {
+pub fn normalize(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 

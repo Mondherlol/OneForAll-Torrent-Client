@@ -157,6 +157,7 @@
     </div>
   {/if}
 
+  <div class="scroll">
   <div class="grid">
     <!-- Image à soi -->
     <button class="tile own" onclick={importFile} title="Importer une image (ou glisse-la ici, ou Ctrl+V)">
@@ -177,6 +178,7 @@
         </button>
       {/each}
     {/if}
+  </div>
   </div>
   {#if list && !shown.length}
     <p class="empty">Aucune image trouvée. Essaie un autre titre (en anglais, par exemple) ou un autre type.</p>
@@ -217,12 +219,13 @@
   .pills button.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
   .pills i { font-style: normal; font-size: 11px; color: var(--muted); }
 
-  .grid { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; align-content: start; padding: 2px 4px 6px 2px; }
-  .tile { position: relative; aspect-ratio: 2 / 3; padding: 0; border-radius: 11px; overflow: hidden; border: 2px solid transparent; background: var(--chip); cursor: pointer; transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s; }
+  .scroll { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; padding: 4px 6px 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); grid-auto-rows: auto; gap: 14px; }
+  .tile { position: relative; display: block; width: 100%; height: auto; aspect-ratio: 2 / 3; padding: 0; border-radius: 11px; overflow: hidden; border: 2px solid transparent; background: var(--chip); cursor: pointer; transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s; }
   .tile:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 22px rgb(0 0 0 / 0.22); border-color: var(--accent); }
   .tile.sel { border-color: var(--accent); }
   .tile.busy { opacity: 0.6; }
-  .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
   .src { position: absolute; top: 6px; left: 6px; padding: 1px 6px; border-radius: 5px; font-size: 10px; font-weight: 700; background: rgb(0 0 0 / 0.6); color: white; backdrop-filter: blur(4px); }
   .check { position: absolute; top: 6px; right: 6px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: white; }
   .cap { position: absolute; inset: auto 0 0 0; display: flex; flex-direction: column; gap: 1px; padding: 22px 8px 7px; text-align: left; background: linear-gradient(transparent, rgb(0 0 0 / 0.85)); color: white; opacity: 0; transition: opacity 0.15s; }

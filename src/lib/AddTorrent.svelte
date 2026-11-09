@@ -1,5 +1,5 @@
 <script>
-  import { fade, fly } from "svelte/transition";
+  import { fade, fly, slide } from "svelte/transition";
   import { untrack } from "svelte";
   import { open as pickFiles } from "@tauri-apps/plugin-dialog";
   import Icon from "./Icon.svelte";
@@ -133,7 +133,8 @@
 
   // Les torrents sont ajoutés sans démarrer ; l'app propose ensuite de choisir les fichiers (onadded)
   async function addOne(r) {
-    if (r.source === "nxbrew" || r.source === "romsfun") return select(r);
+    if (r.source === "romsfun") return toggleRom(r);
+    if (r.source === "nxbrew") return select(r);
     if (r.source === "wowroms") return openUrl(r.page);
     try {
       const res = await stageTorrents([r.url]);
@@ -294,29 +295,58 @@
   // ---------- aperçu ----------
   let selected = $state(null);
   let preview = $state(null);
-  let romAdded = $state(new Set());
-  async function getVersion(v) {
+  // RomsFun : les versions (Europe, USA…) se déplient sous le jeu
+  let romOpen = $state(null); // url du jeu déplié
+  let romVers = $state({}); // url → { list } | { error } | { loading }
+  let romBusy = $state(null); // page de la version en cours d'ajout
+  async function toggleRom(r) {
+    selected = null;
+    if (romOpen === r.url) return (romOpen = null);
+    romOpen = r.url;
+    if (romVers[r.url]?.list) return;
+    romVers[r.url] = { loading: true };
     try {
-      const id = await romDownload(v.page);
-      romAdded = new Set([...romAdded, v.page]);
+      romVers[r.url] = { list: await romVersions(r.page) };
+    } catch (e) {
+      romVers[r.url] = { error: String(e) };
+    }
+  }
+  async function getVersion(v, r) {
+    romBusy = v.page;
+    try {
+      const id = await romDownload(v.page, { title: r.clean || r.title, platform: r.platform, thumb: r.thumb });
       onadded({ hashes: [], errors: [], direct: [id] });
     } catch (e) {
       flash(String(e));
+    } finally {
+      romBusy = null;
     }
+  }
+  // « Mega Man - Maverick Hunter X (Europe) (En,Fr) » → région « Europe » + étiquettes « En,Fr »
+  const REGIONS = {
+    europe: ["EU", "Europe"], usa: ["US", "USA"], japan: ["JP", "Japon"], france: ["FR", "France"], germany: ["DE", "Allemagne"],
+    spain: ["ES", "Espagne"], italy: ["IT", "Italie"], korea: ["KR", "Corée"], world: ["🌐", "Monde"], china: ["CN", "Chine"],
+    australia: ["AU", "Australie"], netherlands: ["NL", "Pays-Bas"], undub: ["JP", "Undub"],
+  };
+  function verInfo(label, title) {
+    const parts = [...label.matchAll(/\(([^)]+)\)|\[([^\]]+)\]/g)].map((m) => (m[1] ?? m[2]).trim());
+    const key = parts.map((x) => x.toLowerCase()).find((x) => REGIONS[x] || REGIONS[x.split(/[ ,]/)[0]]);
+    const reg = key ? REGIONS[key] ?? REGIONS[key.split(/[ ,]/)[0]] : null;
+    const tags = parts.filter((x) => x.toLowerCase() !== key);
+    let rest = label.replace(/\([^)]*\)|\[[^\]]*\]/g, "").trim();
+    const norm = (x) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (norm(rest) === norm(title) || norm(title).includes(norm(rest))) rest = "";
+    return { code: reg?.[0] ?? "", region: reg?.[1] ?? (parts[0] || rest || label), tags: reg ? tags : tags.slice(1), rest, id: key ?? "" };
   }
 
   async function select(r) {
+    if (r.source === "romsfun") return toggleRom(r);
+    romOpen = null;
     selected = r;
     wantArt({ artKey: r.art_key, kind: r.kind, title: r.clean || r.title, year: r.year });
     preview = { loading: true };
     const url = r.url;
     try {
-      if (r.source === "romsfun") {
-        // Plusieurs versions (Europe, USA…) : téléchargement direct dans l'onglet DL
-        const versions = await romVersions(r.page);
-        if (selected?.url === url) preview = { versions };
-        return;
-      }
       if (r.source === "wowroms") {
         preview = { error: "WowRoms ne donne son lien qu'à un navigateur : clique sur « Voir sur le site » pour télécharger. Le fichier se lance ensuite dans le bon émulateur (double-clic, ou + → Fichier)." };
         return;
@@ -440,7 +470,7 @@
             {#each shown as r (r.url)}
               {@const already = have.has(r.hash) || added.has(r.url)}
               {@const art = arts[r.art_key]}
-              <li class:sel={selected?.url === r.url} use:lazyArt={r}>
+              <li class:sel={selected?.url === r.url || romOpen === r.url} class:open={romOpen === r.url} use:lazyArt={r}>
                 <button class="row" onclick={() => select(r)}>
                   <span class="thumb k-{r.kind}">
                     {#if r.thumb || art?.url}<img src={r.thumb || art.url} alt="" loading="lazy" />{:else}<Icon name={r.kind} size={18} />{/if}
@@ -463,9 +493,33 @@
                 {#if already}
                   <span class="done" title="Déjà ajouté"><Icon name="check" size={15} /></span>
                 {:else}
-                  <button class="dl" title={r.source === "wowroms" ? "Ouvrir sur WowRoms" : r.source === "romsfun" ? "Choisir la version" : "Télécharger"} onclick={() => addOne(r)}><Icon name={r.source === "wowroms" ? "open" : "down"} size={15} /></button>
+                  <button class="dl" class:chev={r.source === "romsfun"} class:up={romOpen === r.url} title={r.source === "wowroms" ? "Ouvrir sur WowRoms" : r.source === "romsfun" ? "Choisir la version" : "Télécharger"} onclick={() => addOne(r)}><Icon name={r.source === "wowroms" ? "open" : "down"} size={15} /></button>
                 {/if}
               </li>
+              {#if romOpen === r.url}
+                {@const st = romVers[r.url]}
+                <li class="vers" transition:slide={{ duration: 160 }}>
+                  {#if !st || st.loading}
+                    <span class="v-load"><span class="v-spin"></span>Recherche des versions…</span>
+                  {:else if st.error}
+                    <span class="v-err">{st.error}</span>
+                  {:else}
+                    {#each st.list as v (v.page)}
+                      {@const vi = verInfo(v.label, r.title)}
+                      <button class="ver" disabled={!!romBusy} onclick={() => getVersion(v, r)} title={v.label}>
+                        <span class="v-code c-{vi.id.split(/[ ,]/)[0]}">{vi.code || "•"}</span>
+                        <span class="v-txt">
+                          <b>{vi.region}</b>
+                          {#if vi.rest || vi.tags.length}<small>{[vi.rest, ...vi.tags].filter(Boolean).join(" · ")}</small>{/if}
+                        </span>
+                        <span class="v-size">{fmtSize(v.size)}</span>
+                        <span class="v-go">{#if romBusy === v.page}<span class="v-spin w"></span>{:else}<Icon name="down" size={14} />{/if}Télécharger</span>
+                      </button>
+                    {/each}
+                    <span class="v-hint">Ça part dans l'onglet <b>DL</b> · « Jouer » le lance dans le bon émulateur</span>
+                  {/if}
+                </li>
+              {/if}
             {/each}
           </ul>
         {:else}
@@ -514,18 +568,6 @@
               <ul class="skel small">{#each Array(5) as _, i}<li style="--d:{i * 60}ms"><span class="sk-lines"><i></i></span></li>{/each}</ul>
             {:else if preview?.error}
               <p class="hint">{preview.error}</p>
-            {:else if preview?.versions}
-              <p class="nx-note">Choisis une version : elle part dans l'onglet <b>DL</b>, puis « Jouer » la lance dans le bon émulateur.</p>
-              <h4>{preview.versions.length} version{preview.versions.length > 1 ? "s" : ""}</h4>
-              <ul>
-                {#each preview.versions as v}
-                  <li class="ver">
-                    <span class="fname" title={v.label}>{v.label}</span><span class="fsize">{fmtSize(v.size)}</span>
-                    {#if romAdded.has(v.page)}<span class="done"><Icon name="check" size={13} /></span>
-                    {:else}<button class="nx-link" onclick={() => getVersion(v)}><Icon name="down" size={12} /></button>{/if}
-                  </li>
-                {/each}
-              </ul>
             {:else if preview?.nx}
               {#if !preview.nx.length}
                 <p class="hint">Aucun lien trouvé sur la page — ouvre-la sur le site.</p>
@@ -659,6 +701,29 @@
   ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   .results li { display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 4px; border-radius: 11px; transition: background 0.1s; }
   .results li:hover { background: var(--chip); }
+  .results li.open { border-radius: 11px 11px 0 0; }
+  .results li.vers { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: -2px 0 6px; padding: 8px 10px 10px 64px; border-radius: 0 0 11px 11px; background: var(--accent-soft); box-shadow: inset 1.5px 0 0 var(--accent), inset -1.5px 0 0 var(--accent), inset 0 -1.5px 0 var(--accent); }
+  .ver { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 8px 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s; }
+  .ver:hover:not(:disabled) { border-color: var(--accent); box-shadow: 0 2px 10px rgb(0 0 0 / 0.08); }
+  .ver:disabled { cursor: progress; opacity: 0.7; }
+  .v-code { flex: none; display: grid; place-items: center; width: 34px; height: 26px; border-radius: 7px; font-size: 11.5px; font-weight: 800; letter-spacing: 0.03em; background: var(--chip); color: var(--text-2); }
+  .v-code.c-europe { background: #1d4ed8; color: white; }
+  .v-code.c-usa { background: #dc2626; color: white; }
+  .v-code.c-japan, .v-code.c-undub { background: #f8fafc; color: #be123c; box-shadow: inset 0 0 0 1.5px #be123c; }
+  .v-code.c-france { background: linear-gradient(90deg, #1d4ed8 33%, #f8fafc 33% 66%, #dc2626 66%); color: #111; }
+  .v-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .v-txt b { font-size: 13.5px; font-weight: 650; }
+  .v-txt small { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .v-size { flex: none; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .v-go { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 13px; border-radius: 8px; background: var(--accent); color: white; font-size: 12.5px; font-weight: 650; }
+  .v-hint { font-size: 11.5px; color: var(--muted); padding: 2px 2px 0; }
+  .v-load, .v-err { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 6px 2px; }
+  .v-err { color: var(--err); }
+  .v-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--accent); animation: vspin 0.8s linear infinite; }
+  .v-spin.w { border-color: rgb(255 255 255 / 0.4); border-top-color: white; }
+  @keyframes vspin { to { transform: rotate(360deg); } }
+  .dl.chev :global(svg) { transition: transform 0.15s; }
+  .dl.chev.up :global(svg) { transform: rotate(180deg); }
   .results li.sel { background: var(--accent-soft); box-shadow: inset 0 0 0 1.5px var(--accent); }
   .row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 4px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
   .thumb { flex: none; width: 40px; height: 58px; border-radius: 6px; overflow: hidden; display: grid; place-items: center; background: var(--chip); color: var(--muted); }
