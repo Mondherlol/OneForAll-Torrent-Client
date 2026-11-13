@@ -64,6 +64,19 @@ struct AppState {
     content_kind: Mutex<HashMap<String, ContentInfo>>,
     /// Dernière progression vue de chaque torrent (pour la notification « terminé »)
     last_progress: Mutex<HashMap<String, (f64, String)>>,
+    /// Torrents rattachés à une série à la main (épisode cherché depuis sa fiche) : hash → série
+    links: Mutex<HashMap<String, Link>>,
+}
+
+/// Série d'un torrent rattaché : sa clé de groupe et son titre (le nom du torrent peut être différent : « [Judas] JoJo - S06E09 »)
+#[derive(Serialize, serde::Deserialize, Clone)]
+struct Link {
+    key: String,
+    title: String,
+}
+
+fn load_links() -> HashMap<String, Link> {
+    std::fs::read(config::data_dir().join("links.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 impl AppState {
@@ -73,6 +86,19 @@ impl AppState {
     fn save_held(&self) {
         let map = self.held.lock().unwrap().clone();
         let _ = std::fs::write(config::data_dir().join("held.json"), serde_json::to_vec(&map).unwrap_or_default());
+    }
+    fn save_links(&self) {
+        let map = self.links.lock().unwrap().clone();
+        let _ = std::fs::write(config::data_dir().join("links.json"), serde_json::to_vec(&map).unwrap_or_default());
+    }
+    /// Media d'un torrent, rattaché à sa série si on l'a ajouté depuis la fiche de celle-ci
+    fn media(&self, raw: qbit::RawTorrent) -> Media {
+        let mut m = Media::from_raw(raw);
+        if let Some(l) = self.links.lock().unwrap().get(&m.hash) {
+            m.group_key = l.key.clone();
+            m.title = l.title.clone();
+        }
+        m
     }
 }
 
@@ -260,7 +286,7 @@ fn file_path(save_path: &str, f: &TorrentFile) -> PathBuf {
 #[tauri::command]
 async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<Media>, String> {
     let raw = state.qbit.torrents().await?;
-    let mut media: Vec<Media> = raw.iter().cloned().map(Media::from_raw).collect();
+    let mut media: Vec<Media> = raw.iter().cloned().map(|r| state.media(r)).collect();
 
     // Torrents partiels : combien de fichiers (épisodes) sont cochés ?
     for (m, r) in media.iter_mut().zip(&raw) {
@@ -1164,8 +1190,18 @@ async fn stage(st: &AppState, urls: &[String], paths: &[String]) -> Staged {
 }
 
 #[tauri::command]
-async fn stage_torrents(state: State<'_, AppState>, urls: Vec<String>, paths: Vec<String>) -> Result<Staged, String> {
-    Ok(stage(&state, &urls, &paths).await)
+async fn stage_torrents(state: State<'_, AppState>, urls: Vec<String>, paths: Vec<String>, link: Option<Link>) -> Result<Staged, String> {
+    let out = stage(&state, &urls, &paths).await;
+    // Épisode cherché depuis la fiche d'une série : il la rejoint (groupe + dossier), quel que soit son nom
+    if let Some(l) = link.filter(|l| !l.key.is_empty() && !l.title.is_empty()) {
+        let mut all = state.links.lock().unwrap();
+        for h in &out.hashes {
+            all.insert(h.to_lowercase(), l.clone());
+        }
+        drop(all);
+        state.save_links();
+    }
+    Ok(out)
 }
 
 // ---------- un dossier par série ----------
@@ -1362,13 +1398,13 @@ async fn play(app: tauri::AppHandle, state: State<'_, AppState>, hashes: Vec<Str
     // Un seul épisode d'une série en plusieurs torrents : les épisodes suivants déjà téléchargés
     // passent à la suite (pour la fenêtre « Épisode suivant »)
     if let [h] = hashes.as_slice() {
-        if let Some(me) = ts.iter().find(|t| &t.hash == h).map(|t| Media::from_raw(t.clone())) {
+        if let Some(me) = ts.iter().find(|t| &t.hash == h).map(|t| state.media(t.clone())) {
             if let Some(ep) = me.episode {
                 let order = |m: &Media| (m.season.unwrap_or(0), m.episode.unwrap_or(0));
                 let mut next: Vec<(u32, u32, String)> = ts
                     .iter()
                     .filter(|t| t.hash != me.hash && t.progress >= 0.999)
-                    .map(|t| Media::from_raw(t.clone()))
+                    .map(|t| state.media(t.clone()))
                     .filter(|m| m.group_key == me.group_key && m.episode.is_some() && order(m) > (me.season.unwrap_or(0), ep))
                     .map(|m| (m.season.unwrap_or(0), m.episode.unwrap_or(0), m.hash.clone()))
                     .collect();
@@ -1418,7 +1454,7 @@ struct ShowInfo {
 }
 
 async fn show_info(state: &AppState, t: &qbit::RawTorrent) -> ShowInfo {
-    let m = Media::from_raw(t.clone());
+    let m = state.media(t.clone());
     let mut tmdb = state.cfg().tmdb_key;
     if tmdb.is_empty() {
         tmdb = option_env!("ONEFORALL_TMDB_KEY").unwrap_or_default().to_string();
@@ -1905,7 +1941,7 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
                 p < 0.999 && matches!(s.as_str(), "downloading" | "stalledDL" | "forcedDL" | "queuedDL")
             });
             if was_downloading && t.progress >= 0.999 && !held.contains(&t.hash) {
-                out.push(Media::from_raw(t.clone()));
+                out.push(st.media(t.clone()));
             }
         }
         out
@@ -1970,8 +2006,8 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
                 // Épisode de série : dans le dossier de la série (« D:\Series\JoJo's Bizarre Adventure\ »),
                 // avec les autres épisodes déjà présents
                 if kind == "series" || kind == "anime" {
-                    let me = Media::from_raw(t.clone());
-                    let siblings: Vec<Media> = ts.iter().filter(|o| o.hash != t.hash).map(|o| Media::from_raw(o.clone())).filter(|o| o.group_key == me.group_key).collect();
+                    let me = st.media(t.clone());
+                    let siblings: Vec<Media> = ts.iter().filter(|o| o.hash != t.hash).map(|o| st.media(o.clone())).filter(|o| o.group_key == me.group_key).collect();
                     if !siblings.is_empty() || is_media(&t.name) {
                         let base = cfg
                             .folders
@@ -1999,6 +2035,14 @@ async fn background_tick(st: &AppState, app: &tauri::AppHandle) {
         drop(all);
         if changed {
             st.save_held();
+        }
+        let mut links = st.links.lock().unwrap();
+        let before = links.len();
+        links.retain(|h, _| alive.contains(h.as_str()));
+        let changed = links.len() != before;
+        drop(links);
+        if changed {
+            st.save_links();
         }
     }
 
@@ -2325,6 +2369,7 @@ pub fn run() {
         file_counts: Mutex::new(HashMap::new()),
         content_kind: Mutex::new(HashMap::new()),
         last_progress: Mutex::new(HashMap::new()),
+        links: Mutex::new(load_links()),
     };
     let app = tauri::Builder::default()
         // Aperçu vidéo de la timeline « Extrait », relayé avec les en-têtes exigés par YouTube

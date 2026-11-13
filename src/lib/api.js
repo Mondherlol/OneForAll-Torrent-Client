@@ -44,7 +44,8 @@ export const testNotification = () => invoke("test_notification");
 export const getSeeding = () => invoke("get_seeding");
 export const setSeeding = (enabled) => invoke("set_seeding", { enabled });
 export const openDefaultApps = () => invoke("open_default_apps");
-export const stageTorrents = (urls = [], paths = []) => invoke("stage_torrents", { urls, paths });
+/** link = { key, title } : rattache les torrents ajoutés à cette série (épisode cherché depuis sa fiche) */
+export const stageTorrents = (urls = [], paths = [], link = null) => invoke("stage_torrents", { urls, paths, link });
 export const getSources = (hash) => invoke("get_sources", { hash });
 export const qbitStatus = () => invoke("qbit_status");
 export const setupQbit = () => invoke("setup_qbit");

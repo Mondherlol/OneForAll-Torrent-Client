@@ -62,7 +62,7 @@
     const usesSE = /S\d+E\d+/i.test(latest.name);
     const code = usesSE ? `S${pad(curSeason || 1)}E${pad(n)}` : pad(n);
     const source = latest.name.trim().startsWith("[") ? "nyaa" : g.kind === "anime" && !/MULTI|VFF|VOSTFR|FRENCH/i.test(latest.name) ? "nyaa" : "c411";
-    onaction("searchEpisode", { query: `${latest.title} ${code}`, source, prefer: releaseGroup(latest.name), code });
+    onaction("searchEpisode", { query: `${latest.title} ${code}`, source, prefer: releaseGroup(latest.name), code, link: { key: g.artKey, title: latest.title } });
   }
   const isVideo = $derived(g.kind === "film" || isShow);
 

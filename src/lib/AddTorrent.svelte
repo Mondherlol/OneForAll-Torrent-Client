@@ -148,7 +148,8 @@
     if (r.source === "nxbrew") return select(r);
     if (r.source === "wowroms") return openUrl(r.page);
     try {
-      const res = await stageTorrents([r.url]);
+      // Résultat d'une recherche d'épisode : il rejoint la série, même si son nom diffère
+      const res = await stageTorrents([r.url], [], link && matchesEp(r.title) ? link : null);
       if (res.hashes.length) added = new Set([...added, r.url]);
       onadded(res);
     } catch (e) {
@@ -264,6 +265,7 @@
   let epCode = $state(null); // « S06E09 » ou « 09 »
   let epOnly = $state(true);
   let prefer = $state(null); // équipe de sortie du dernier épisode téléchargé
+  let link = $state(null); // série à laquelle rattacher l'épisode ajouté ({ key, title })
   $effect(() => {
     const init = initial;
     if (!init) return;
@@ -281,6 +283,7 @@
       // Sans catégorie : on garde le genre et le site choisis la dernière fois
       epCode = init.code ?? null;
       prefer = init.prefer ?? null;
+      link = init.link ?? null;
       search();
     });
   });
