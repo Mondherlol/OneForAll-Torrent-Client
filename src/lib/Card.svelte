@@ -27,7 +27,7 @@
     const now = Date.now();
     const season = Math.max(0, ...g.items.map((i) => i.season ?? 0));
     const owned = new Set(g.items.filter((i) => (i.season ?? season) === season).map((i) => i.episode).filter((n) => n != null));
-    const eps = alignEpisodes(s, owned, season, now);
+    const eps = alignEpisodes(s, owned, season, now, g.items.filter((i) => (i.season ?? season) === season));
     const ep = eps.filter((e) => airTime(e) > now && !owned.has(e.number)).sort((a, b) => airTime(a) - airTime(b))[0];
     if (!ep) return null;
     const d = airTime(ep) - now;

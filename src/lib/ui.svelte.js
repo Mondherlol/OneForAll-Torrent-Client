@@ -151,15 +151,25 @@ export function releaseGroup(name) {
 /**
  * Épisodes de la saison en cours, numérotés comme les fichiers de l'utilisateur.
  * AniList recommence parfois à 1 là où les sorties continuent (« S06E08 » = épisode 7 d'AniList) :
- * si on possède un numéro plus grand que le dernier épisode sorti, on en déduit le décalage.
+ * on compare le dernier épisode possédé au dernier épisode sorti au moment où on l'a ajouté
+ * (sinon le décalage disparaît dès qu'AniList sort l'épisode suivant qu'on n'a pas encore).
  */
-export function alignEpisodes(sched, owned, season, now = Date.now()) {
+export function alignEpisodes(sched, owned, season, now = Date.now(), items = []) {
   if (!sched) return [];
   let eps = sched.episodes.filter((e) => e.season === 0 || e.season === (season || 1));
-  const aired = eps.filter((e) => airTime(e) && airTime(e) <= now).map((e) => e.number);
-  const lastAired = aired.length ? Math.max(...aired) : 0;
+  const lastAiredAt = (t) => Math.max(0, ...eps.filter((e) => airTime(e) && airTime(e) <= t).map((e) => e.number));
+  const lastAired = lastAiredAt(now);
   const maxOwned = owned.size ? Math.max(...owned) : 0;
-  const offset = sched.source === "anilist" && lastAired && maxOwned > lastAired ? maxOwned - lastAired : 0;
+  let offset = 0;
+  if (sched.source === "anilist" && lastAired) {
+    offset = Math.max(0, maxOwned - lastAired);
+    // Fichier le plus avancé : quel épisode AniList était sorti quand on l'a ajouté (12 h de marge : sorties en avance)
+    const last = items.filter((i) => i.episode === maxOwned && i.added_on).sort((a, b) => a.added_on - b.added_on)[0];
+    if (last) {
+      const then = lastAiredAt(last.added_on * 1000 + 12 * 3600000);
+      if (then) offset = Math.max(offset, maxOwned - then);
+    }
+  }
   return offset ? eps.map((e) => ({ ...e, number: e.number + offset })) : eps;
 }
 

@@ -33,7 +33,7 @@
   const curSeason = $derived(Math.max(0, ...g.items.map((i) => i.season ?? 0)));
   // Épisodes de la saison en cours (AniList : saison 0 = « en cours »)
   const ownedNums = $derived(new Set(g.items.filter((i) => (i.season ?? curSeason) === curSeason && i.episode != null).map((i) => i.episode)));
-  const seasonEps = $derived(alignEpisodes(sched, ownedNums, curSeason, now));
+  const seasonEps = $derived(alignEpisodes(sched, ownedNums, curSeason, now, g.items.filter((i) => (i.season ?? curSeason) === curSeason)));
   const nextEp = $derived.by(() => {
     if (!sched) return null;
     // Prochain épisode pas encore téléchargé (certaines équipes sortent un épisode en avance)
