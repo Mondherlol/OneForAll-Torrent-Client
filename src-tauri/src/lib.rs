@@ -860,6 +860,18 @@ fn get_downloads(state: State<'_, AppState>) -> Vec<DirectView> {
         emu::is_rom(&p) || emu::is_archive(&p)
     };
     let todo = state.direct.take_unchecked(romish);
+    // Une fois par lancement : les archives PC prises à tort pour des ROM (modules .prx → « PSP ») perdent leur console
+    static RECHECK: std::sync::Once = std::sync::Once::new();
+    RECHECK.call_once(|| {
+        let direct = state.direct.clone();
+        std::thread::spawn(move || {
+            for d in direct.list() {
+                if !d.platform.is_empty() && d.rom.is_empty() && emu::is_pc_archive(&d.final_path()) {
+                    direct.set_game(&d.id, &d.game, "");
+                }
+            }
+        });
+    });
     if !todo.is_empty() {
         let direct = state.direct.clone();
         std::thread::spawn(move || {

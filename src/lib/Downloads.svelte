@@ -499,7 +499,7 @@
               {#if !d.thumb && !d.media && arts[d.art_key]?.url}<img class="blur" src={arts[d.art_key].url} alt="" draggable="false" />{/if}
               {@render cover(d)}
               <span class="cv-tl">
-                {#if s}{@render badge(s, false)}{:else}<span class="site s-file" title={KIND_LABEL[d.kind] ?? "Fichier"}><Icon name={d.kind} size={13} /></span>{/if}
+                {#if s}{@render badge(s, false)}{:else}<span class="sb s-file" title={KIND_LABEL[d.kind] ?? "Fichier"}><Icon name={d.kind} size={13} /></span>{/if}
               </span>
               <span class="cv-tr">
                 {#if d.media}<span class="pill">{d.media_label}</span>{/if}
@@ -534,7 +534,7 @@
 {/snippet}
 
 {#snippet badge(s, small)}
-  <span class="site s-{s.id}" class:sm={small} title={s.label}>
+  <span class="sb s-{s.id}" class:sm={small} title={s.label}>
     {#if s.id === "yt"}<svg viewBox="0 0 24 24" width={small ? 9 : 12} height={small ? 9 : 12}><path d="M8 5.5v13l11-6.5z" fill="currentColor" /></svg>
     {:else if s.id === "ig"}<svg viewBox="0 0 24 24" width={small ? 10 : 13} height={small ? 10 : 13} fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="5" /><circle cx="12" cy="12" r="4" /></svg>
     {:else if s.id === "sp"}<svg viewBox="0 0 24 24" width={small ? 10 : 13} height={small ? 10 : 13} fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 9c4.5-1.5 9.5-1 14 1.5M6 13c3.6-1 7.4-.6 11 1.2M7 16.8c2.8-.7 5.5-.4 8 .9" /></svg>
@@ -700,9 +700,9 @@
   .corner { position: absolute; left: 3px; bottom: 3px; }
 
   /* Logo du site d'origine */
-  .site { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: #475569; color: white; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1; }
-  .site.sm { width: 16px; height: 16px; border-radius: 4px; font-size: 9.5px; }
-  .site b { font-weight: 800; font-family: system-ui, sans-serif; }
+  .sb { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: #475569; color: white; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1; }
+  .sb.sm { width: 16px; height: 16px; border-radius: 4px; font-size: 9.5px; }
+  .sb b { font-weight: 800; font-family: system-ui, sans-serif; }
   .s-yt { background: #ff0033; }
   .s-x, .s-tt, .s-th, .s-kk { background: #111; }
   .s-kk { color: #53fc18; }

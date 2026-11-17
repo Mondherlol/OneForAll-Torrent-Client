@@ -180,7 +180,12 @@ fn archive_entries(p: &Path) -> Vec<String> {
 fn detect_archive(p: &Path) -> Option<&'static Emu> {
     let entries = archive_entries(p);
     let exts: Vec<String> = entries.iter().map(|e| ext(Path::new(e))).collect();
-    if let Some(m) = exts.iter().find_map(|x| EMUS.iter().find(|m| m.exts.contains(&x.as_str()))) {
+    // Un .exe dedans : jeu ou logiciel PC (ex. portage PC d'un jeu PS5 plein de modules .prx)
+    if has_exe(&exts) {
+        return None;
+    }
+    // .prx / .nro : modules et programmes maison, pas des jeux
+    if let Some(m) = exts.iter().filter(|x| !matches!(x.as_str(), "prx" | "nro")).find_map(|x| EMUS.iter().find(|m| m.exts.contains(&x.as_str()))) {
         return Some(m);
     }
     // Image disque (.iso…) : on lit son début directement dans l'archive (PSP, PS2, GameCube…)
@@ -193,6 +198,15 @@ fn detect_archive(p: &Path) -> Option<&'static Emu> {
     }
     // Disque PS1 en .cue/.bin : le cas le plus courant
     exts.iter().any(|x| x == "cue").then(|| get("duckstation")).flatten()
+}
+
+fn has_exe(exts: &[String]) -> bool {
+    exts.iter().any(|x| x == "exe")
+}
+
+/// Archive d'un programme PC (contient un .exe) : jamais une ROM
+pub fn is_pc_archive(p: &Path) -> bool {
+    is_archive(p) && has_exe(&archive_entries(p).iter().map(|e| ext(Path::new(e))).collect::<Vec<_>>())
 }
 
 /// Les 8 premiers Mo d'un fichier de l'archive, sans tout décompresser
