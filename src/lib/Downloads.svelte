@@ -7,7 +7,7 @@
   import DlOptions from "./DlOptions.svelte";
   import { addDownloads, downloadAction, mediaInfo, moveDownloads, openPath, openUrl, reveal } from "./api.js";
   import { KIND_LABEL, fmtAgo, fmtEta, fmtSize, fmtSpeed } from "./model.js";
-  import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, wantArt } from "./ui.svelte.js";
+  import { arts, confirmAsk, flash, openMenu, openStudio, pickArt, ui, wantArt } from "./ui.svelte.js";
   import { dlExtract, dlSetKind, emuDetect, hostDownload, isHostLink, readBook } from "./api.js";
   import ConsoleBadge from "./ConsoleBadge.svelte";
   import { emuById, play } from "./emu.svelte.js";
@@ -187,22 +187,33 @@
     }
   }
 
-  async function remove(d, withFile) {
-    const what = `« ${d.name} »`;
+  async function remove(items, withFile) {
+    const n = items.length;
+    const what = n === 1 ? `« ${items[0].name} »` : `${n} téléchargements`;
+    const size = items.reduce((s, d) => s + Math.max(0, d.done), 0);
+    const allDone = items.every((d) => d.st === "done");
     const ok = await confirmAsk(
-      withFile ? `Supprimer ${what} et le fichier ?` : `Retirer ${what} de la liste ?`,
-      withFile ? `${fmtSize(d.done)} seront effacés (corbeille).` : d.st === "done" ? "Le fichier reste sur le disque." : "Le fichier partiel (.part) est effacé.",
+      withFile ? `Supprimer ${what} ${n === 1 ? "et le fichier" : "et leurs fichiers"} ?` : `Retirer ${what} de la liste ?`,
+      withFile
+        ? `${fmtSize(size)} seront effacés (corbeille).`
+        : allDone
+          ? n === 1 ? "Le fichier reste sur le disque." : "Les fichiers restent sur le disque."
+          : items.some((d) => d.st === "done") ? "Les fichiers terminés restent sur le disque, les fichiers partiels (.part) sont effacés." : "Le fichier partiel (.part) est effacé.",
       withFile ? "Supprimer" : "Retirer",
       withFile,
     );
-    if (ok) act([d], withFile ? "delete_files" : "delete");
+    if (!ok) return;
+    const ids = new Set(items.map((d) => d.id));
+    sel = new Set([...sel].filter((id) => !ids.has(id)));
+    act(items, withFile ? "delete_files" : "delete");
   }
 
-  async function moveTo(d) {
-    const dir = await pickFolder({ directory: true, title: `Déplacer « ${d.name} » vers…`, defaultPath: d.dir || undefined });
+  async function moveTo(items) {
+    const d = items[0];
+    const dir = await pickFolder({ directory: true, title: items.length > 1 ? `Déplacer ${items.length} téléchargements vers…` : `Déplacer « ${d.name} » vers…`, defaultPath: d.dir || undefined });
     if (typeof dir !== "string") return;
     try {
-      await moveDownloads([d.id], dir);
+      await moveDownloads(items.map((x) => x.id), dir);
       flash(`Déplacé vers ${dir}`);
       onrefresh();
     } catch (e) {
@@ -215,11 +226,159 @@
     if (done.length) await act(done, "delete");
   }
 
-  const copy = (t) => navigator.clipboard.writeText(t).then(() => flash("Lien copié"));
+  const copy = (t, n = 1) => navigator.clipboard.writeText(t).then(() => flash(n > 1 ? `${n} liens copiés` : "Lien copié"));
+  const copyLinks = (items) => {
+    const urls = items.filter((d) => d.media !== "compress" && d.media !== "clip").map((d) => d.url);
+    if (urls.length) copy(urls.join("\n"), urls.length);
+  };
   // Terminé : on ouvre le fichier. Sinon : la vidéo d'origine (pas encore de fichier), ou le dossier.
   const web = (d) => d.media && d.media !== "compress" && d.media !== "clip";
   const openItem = (d) =>
     (d.st === "done" ? (d.kind === "book" ? readBook(d.path) : openPath(d.path)) : web(d) ? openUrl(d.url) : reveal(d.path, d.dir)).catch((e) => flash(String(e)));
+
+  const isBusy = (d) => d.st === "running" || d.st === "queued";
+  const kindMenu = (items) => ({
+    label: "Type",
+    icon: "tag",
+    sub: Object.entries(KIND_LABEL).map(([k, label]) => ({
+      label,
+      checked: items.every((d) => d.kind === k),
+      run: () => Promise.all(items.map((d) => dlSetKind(d.id, k))).then(onrefresh).catch((err) => flash(String(err))),
+    })),
+  });
+
+  // Plusieurs éléments sélectionnés : actions groupées
+  function multiMenu(e, items) {
+    openMenu(e, [
+      items.some(isBusy) && { label: "Pause", icon: "pause", run: () => act(items.filter(isBusy), "pause") },
+      items.some((d) => d.st === "paused") && { label: "Reprendre", icon: "play", run: () => act(items.filter((d) => d.st === "paused"), "resume") },
+      items.some((d) => d.st === "error") && { label: "Réessayer", icon: "refresh", run: () => act(items.filter((d) => d.st === "error"), "resume") },
+      { label: "Déplacer…", icon: "move", run: () => moveTo(items) },
+      { label: "Copier les liens", icon: "copy", run: () => copyLinks(items) },
+      items.every((d) => !d.media) && kindMenu(items),
+      "-",
+      { label: `Retirer de la liste (${items.length})`, icon: "close", run: () => remove(items, false) },
+      items.some((d) => d.done > 0) && { label: "Supprimer avec les fichiers", icon: "trash", danger: true, run: () => remove(items, true) },
+    ]);
+  }
+
+  // ---------- sélection (comme les onglets torrents) ----------
+  let layout = $state(localStorage.getItem("oneforall.dlView") === "cards" ? "cards" : "list");
+  $effect(() => localStorage.setItem("oneforall.dlView", layout));
+  let sel = $state(new Set());
+  let anchor = null;
+  const selItems = $derived(shown.filter((d) => sel.has(d.id)));
+  // Ce qui disparaît (filtre, retiré) sort de la sélection
+  $effect(() => {
+    const ids = new Set(shown.map((d) => d.id));
+    untrack(() => {
+      if ([...sel].some((id) => !ids.has(id))) sel = new Set([...sel].filter((id) => ids.has(id)));
+    });
+  });
+
+  let skipClick = false;
+  function itemClick(e, d, i) {
+    if (skipClick || e.target.closest("button")) return;
+    if (e.ctrlKey || e.metaKey) {
+      const s = new Set(sel);
+      s.has(d.id) ? s.delete(d.id) : s.add(d.id);
+      sel = s;
+      anchor = i;
+    } else if (e.shiftKey && anchor != null) {
+      const [a, b] = anchor < i ? [anchor, i] : [i, anchor];
+      sel = new Set([...sel, ...shown.slice(a, b + 1).map((x) => x.id)]);
+    } else {
+      anchor = i;
+      if (sel.size) sel = new Set();
+    }
+  }
+  function itemMenu(e, d) {
+    if (sel.size > 1 && sel.has(d.id)) return multiMenu(e, selItems);
+    if (sel.size && !sel.has(d.id)) sel = new Set();
+    menu(e, d);
+  }
+
+  // Cliquer-glisser → rectangle de sélection. Pas de capture du pointeur (elle volait les clics
+  // et doubles-clics des lignes) : on suit la souris sur la fenêtre.
+  let band = $state(null);
+  let bandBase = new Set();
+  function bandDown(e) {
+    if (e.button !== 0 || !e.target.closest?.("main")) return;
+    if (e.target.closest("button, input, select, textarea, a, label, .add, .bar, .menu, .modal, .dialog, .selbar")) return;
+    bandBase = e.ctrlKey || e.shiftKey ? new Set(sel) : new Set();
+    band = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false, onItem: !!e.target.closest("[data-id]") };
+  }
+  function bandMove(e) {
+    if (!band) return;
+    band.x1 = e.clientX;
+    band.y1 = e.clientY;
+    if (!band.moved && Math.hypot(band.x1 - band.x0, band.y1 - band.y0) < 6) return;
+    band.moved = true;
+    window.getSelection()?.removeAllRanges();
+    const [l, r] = [Math.min(band.x0, band.x1), Math.max(band.x0, band.x1)];
+    const [t, b] = [Math.min(band.y0, band.y1), Math.max(band.y0, band.y1)];
+    const s = new Set(bandBase);
+    for (const el of document.querySelectorAll(".dls [data-id]")) {
+      const rc = el.getBoundingClientRect();
+      if (rc.right > l && rc.left < r && rc.bottom > t && rc.top < b) s.add(el.dataset.id);
+    }
+    sel = s;
+  }
+  function bandUp() {
+    if (!band) return;
+    if (band.moved) {
+      // Le clic qui suit le relâchement ne doit pas défaire la sélection
+      skipClick = true;
+      setTimeout(() => (skipClick = false), 0);
+    } else if (!band.onItem && !bandBase.size) sel = new Set();
+    band = null;
+  }
+
+  function onkey(e) {
+    if (ui.confirm || ui.menu || options || compressing || document.querySelector(".modal, .dialog")) return;
+    const t = e.target;
+    if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return;
+    if (e.ctrlKey && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      sel = new Set(shown.map((d) => d.id));
+    } else if (e.key === "Escape" && sel.size) sel = new Set();
+    else if (e.key === "Delete" && selItems.length) remove(selItems, e.shiftKey);
+  }
+
+  // Petit logo du site d'origine (vidéos), ou de l'outil (extrait, compression)
+  const SITES = [
+    [/youtube\.com|youtu\.be/, "yt", "YouTube"],
+    [/(^|\.)x\.com|twitter\.com/, "x", "X"],
+    [/instagram\.com/, "ig", "Instagram"],
+    [/tiktok\.com/, "tt", "TikTok"],
+    [/facebook\.com|fb\.watch/, "fb", "Facebook"],
+    [/vimeo\.com/, "vm", "Vimeo"],
+    [/dailymotion\.com|dai\.ly/, "dm", "Dailymotion"],
+    [/twitch\.tv/, "tw", "Twitch"],
+    [/reddit\.com|redd\.it/, "rd", "Reddit"],
+    [/soundcloud\.com/, "sc", "SoundCloud"],
+    [/spotify\.com/, "sp", "Spotify"],
+    [/bilibili\.com/, "bl", "Bilibili"],
+    [/bsky\.app/, "bs", "Bluesky"],
+    [/kick\.com/, "kk", "Kick"],
+    [/pinterest\./, "pi", "Pinterest"],
+    [/bandcamp\.com/, "bc", "Bandcamp"],
+    [/threads\.net/, "th", "Threads"],
+    [/streamable\.com/, "st", "Streamable"],
+    [/snapchat\.com/, "sn", "Snapchat"],
+  ];
+  const GLYPH = { x: "𝕏", fb: "f", vm: "v", dm: "d", tw: "t", rd: "r", sc: "☁", bl: "b", bs: "b", kk: "K", pi: "P", bc: "bc", th: "@", st: "s", sn: "S", tt: "♪", web: "" };
+  function siteOf(d) {
+    if (d.media === "clip") return { id: "clip", label: "Extrait" };
+    if (d.media === "compress") return { id: "comp", label: "Compression" };
+    if (!d.media) return null;
+    let h = "";
+    try {
+      h = new URL(d.url).hostname;
+    } catch {}
+    const m = SITES.find(([re]) => re.test(h));
+    return m ? { id: m[1], label: m[2] } : { id: "web", label: h.replace(/^(www|m)\./, "") || "Web" };
+  }
 
   function menu(e, d) {
     openMenu(e, [
@@ -234,21 +393,13 @@
       (d.st === "running" || d.st === "queued") && { label: "Pause", icon: "pause", run: () => act([d], "pause") },
       d.st === "paused" && { label: "Reprendre", icon: "play", run: () => act([d], "resume") },
       d.st === "error" && { label: "Réessayer", icon: "refresh", run: () => act([d], "resume") },
-      { label: "Déplacer…", icon: "move", run: () => moveTo(d) },
+      { label: "Déplacer…", icon: "move", run: () => moveTo([d]) },
       { label: "Copier le lien", icon: "copy", run: () => copy(d.url) },
       !d.media && { label: "Choisir l'image…", icon: "image", run: () => pickArt(artFor(d)) },
-      !d.media && {
-        label: "Type",
-        icon: "tag",
-        sub: Object.entries(KIND_LABEL).map(([k, label]) => ({
-          label,
-          checked: d.kind === k,
-          run: () => dlSetKind(d.id, k).then(onrefresh).catch((err) => flash(String(err))),
-        })),
-      },
+      !d.media && kindMenu([d]),
       "-",
-      { label: "Retirer de la liste", icon: "close", run: () => remove(d, false) },
-      d.done > 0 && { label: "Supprimer avec le fichier", icon: "trash", danger: true, run: () => remove(d, true) },
+      { label: "Retirer de la liste", icon: "close", run: () => remove([d], false) },
+      d.done > 0 && { label: "Supprimer avec le fichier", icon: "trash", danger: true, run: () => remove([d], true) },
     ]);
   }
 
@@ -296,6 +447,10 @@
       <button class="sbtn hot" onclick={() => act(downloads.filter((d) => d.st === "paused"), "resume")}><Icon name="play" size={12} />Tout reprendre</button>
     {/if}
     {#if counts.done}<button class="sbtn" onclick={clearDone} title="Retire les terminés de la liste (les fichiers restent)"><Icon name="check" size={12} />Vider les terminés</button>{/if}
+    <div class="seg vw">
+      <button class:on={layout === "list"} title="Vue liste" onclick={() => (layout = "list")}><Icon name="list" size={14} /></button>
+      <button class:on={layout === "cards"} title="Vue cartes" onclick={() => (layout = "cards")}><Icon name="grid" size={14} /></button>
+    </div>
   </div>
 
   {#if !downloads.length}
@@ -306,68 +461,149 @@
   {:else if !shown.length}
     <p class="hint">Rien ici avec ce filtre.</p>
   {:else}
-    <ul>
-      {#each shown as d (d.id)}
-        {@const art = arts[d.art_key]}
-        {@const pct = Math.floor(d.progress * 1000) / 10}
-        <li class="st-{d.st}" class:retry={d.retrying} class:game={isGame(d)} in:fly={{ y: 6, duration: 140 }} oncontextmenu={(e) => menu(e, d)} ondblclick={() => dbl(d)}>
-          <span class="thumb k-{d.kind}" class:wide={d.media}>
-            {#if isGame(d) && art?.url}<img src={art.url} alt="" />
-            {:else if d.thumb}<img src={d.thumb} alt="" referrerpolicy="no-referrer" />
-            {:else if art?.url && !d.media}<img src={art.url} alt="" />
-            {:else}<Icon name={d.media ? (d.media === "mp3" ? "audio" : "film") : d.kind} size={18} />{/if}
-          </span>
-          <div class="main">
-            <div class="top">
-              <span class="title" title={d.name}>{d.title || d.name}</span>
-              {#if d.media}<span class="kb fmt">{d.media_label}</span>{#if d.section_label}<span class="kb cutb" title="Extrait seulement"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}{:else}<span class="kb k-{d.kind}">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
-              {#if d.platform}<ConsoleBadge platform={d.platform} small />{/if}
-            </div>
-            {#if d.rom}
-              <span class="fname rom" title={d.rom}><Icon name="game" size={12} />{d.rom.split(/[\\/]/).pop()}</span>
-            {:else}
-              <span class="fname" class:site={d.media} title={d.media === "clip" ? "" : d.url}>{origin(d)}</span>
-            {/if}
-            {#if d.st !== "done"}
-              <div class="pbar"><span style="width:{pct}%"></span></div>
-            {/if}
-            <div class="meta">
-              {#if d.st !== "done" && d.size > 0}<b>{pct.toFixed(1).replace(".", ",")} %</b><span>{fmtSize(d.done)} / {fmtSize(d.size)}</span>{/if}
-              {#if d.st === "done"}<span>{fmtSize(d.size)}</span>{/if}
-              {#if d.st === "running" && !d.retrying && d.speed > 0}
-                <span class="spd">↓ {fmtSpeed(d.speed)}</span>
-                {#if d.size > 0 && fmtEta(d.eta)}<span>fin dans {fmtEta(d.eta)}</span>{/if}
-                {#if d.conns > 1}<span class="conns" title="Connexions en parallèle">{d.conns} connexions</span>{/if}
+    {#if layout === "list"}
+      <ul>
+        {#each shown as d, i (d.id)}
+          {@const pct = Math.floor(d.progress * 1000) / 10}
+          <li data-id={d.id} class="st-{d.st}" class:sel={sel.has(d.id)} class:retry={d.retrying} class:game={isGame(d)} in:fly={{ y: 6, duration: 140 }} onclick={(e) => itemClick(e, d, i)} oncontextmenu={(e) => itemMenu(e, d)} ondblclick={(e) => !e.ctrlKey && !e.shiftKey && dbl(d)}>
+            <span class="thumb k-{d.kind}" class:wide={d.media}>
+              {@render cover(d)}
+              {#if siteOf(d)}<span class="corner">{@render badge(siteOf(d), true)}</span>{/if}
+            </span>
+            <div class="main">
+              <div class="top">
+                <span class="title" title={d.name}>{d.title || d.name}</span>
+                {@render tags(d)}
+              </div>
+              {#if d.rom}
+                <span class="fname rom" title={d.rom}><Icon name="game" size={12} />{d.rom.split(/[\\/]/).pop()}</span>
+              {:else}
+                <span class="fname" class:site={d.media} title={d.media === "clip" ? "" : d.url}>{origin(d)}</span>
               {/if}
-              {#if statusText(d)}<span class="stxt">{statusText(d)}</span>{/if}
-              {#if d.st !== "done" && d.size > 0 && !d.resumable}<span class="nores" title="Ce serveur ne permet pas de reprendre : une coupure fait repartir de zéro">sans reprise</span>{/if}
-            </div>
-          </div>
-          <div class="acts">
-            {#if d.st === "running" || d.st === "queued"}
-              <button class="ib" title="Pause" onclick={() => act([d], "pause")}><Icon name="pause" size={15} /></button>
-            {:else if d.st === "paused"}
-              <button class="ib hot" title="Reprendre" onclick={() => act([d], "resume")}><Icon name="play" size={15} /></button>
-            {:else if d.st === "error"}
-              <button class="ib" title="Réessayer" onclick={() => act([d], "resume")}><Icon name="refresh" size={15} /></button>
-            {:else if romOf(d)}
-              {#if isArchive(d) && !d.rom}
-                <button class="tb" disabled={extracting === d.id} title="Décompresser l'archive à côté d'elle : le jeu est prêt à lancer" onclick={() => extract(d)}>
-                  {#if extracting === d.id}<span class="spin"></span>Extraction…{:else}<Icon name="layers" size={14} />Extraire{/if}
-                </button>
+              {#if d.st !== "done"}
+                <div class="pbar"><span style="width:{pct}%"></span></div>
               {/if}
-              <button class="tb play" title="Jouer avec {emuById(romOf(d).emu)?.name ?? 'l\'émulateur'}" onclick={() => play(romOf(d))}><Icon name="play" size={14} />Jouer</button>
-            {:else}
-              <button class="ib" title="Ouvrir" onclick={() => openItem(d)}><Icon name="open" size={15} /></button>
-            {/if}
-            <button class="ib" title="Ouvrir le dossier" onclick={() => reveal(d.path, d.dir).catch((e) => flash(String(e)))}><Icon name="folder" size={15} /></button>
-            <button class="ib" title="Plus d'actions" onclick={(e) => menu(e, d)}><Icon name="more" size={15} /></button>
+              {@render meta(d, pct)}
+            </div>
+            <div class="acts">{@render acts(d)}</div>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <div class="cards">
+        {#each shown as d, i (d.id)}
+          {@const pct = Math.floor(d.progress * 1000) / 10}
+          {@const s = siteOf(d)}
+          <div data-id={d.id} class="dc st-{d.st}" class:sel={sel.has(d.id)} class:retry={d.retrying} class:game={isGame(d)} role="button" tabindex="-1" in:fly={{ y: 6, duration: 140 }} onclick={(e) => itemClick(e, d, i)} oncontextmenu={(e) => itemMenu(e, d)} ondblclick={(e) => !e.ctrlKey && !e.shiftKey && dbl(d)} onkeydown={() => {}}>
+            <div class="cv k-{d.kind}" class:poster={!d.thumb && !d.media}>
+              {#if !d.thumb && !d.media && arts[d.art_key]?.url}<img class="blur" src={arts[d.art_key].url} alt="" draggable="false" />{/if}
+              {@render cover(d)}
+              <span class="cv-tl">
+                {#if s}{@render badge(s, false)}{:else}<span class="site s-file" title={KIND_LABEL[d.kind] ?? "Fichier"}><Icon name={d.kind} size={13} /></span>{/if}
+              </span>
+              <span class="cv-tr">
+                {#if d.media}<span class="pill">{d.media_label}</span>{/if}
+                {#if d.section_label}<span class="pill"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}
+                {#if d.platform}<ConsoleBadge platform={d.platform} small />{/if}
+              </span>
+              {#if sel.has(d.id)}<span class="tick"><Icon name="check" size={13} /></span>{/if}
+              {#if d.st !== "done"}
+                <span class="cv-pct">{d.st === "paused" ? "En pause" : d.st === "queued" ? "En attente" : d.st === "error" ? "Erreur" : d.size > 0 ? `${pct.toFixed(0)} %` : "…"}</span>
+                <div class="cv-bar"><span style="width:{pct}%"></span></div>
+              {/if}
+            </div>
+            <div class="dc-body">
+              <span class="title t2" title={d.name}>{d.title || d.name}</span>
+              <span class="fname" class:site={d.media} class:rom={d.rom}>{d.rom ? d.rom.split(/[\\/]/).pop() : origin(d)}</span>
+              {@render meta(d, pct)}
+            </div>
+            <div class="dc-acts">{@render acts(d)}</div>
           </div>
-        </li>
-      {/each}
-    </ul>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </section>
+
+{#snippet cover(d)}
+  {@const art = arts[d.art_key]}
+  {#if isGame(d) && art?.url}<img src={art.url} alt="" draggable="false" />
+  {:else if d.thumb}<img src={d.thumb} alt="" referrerpolicy="no-referrer" draggable="false" />
+  {:else if art?.url && !d.media}<img src={art.url} alt="" draggable="false" />
+  {:else}<span class="ico"><Icon name={d.media === "clip" ? "scissors" : d.media === "compress" ? "layers" : d.media ? (d.media === "mp3" ? "audio" : "film") : d.kind} size={layout === "cards" ? 34 : 18} /></span>{/if}
+{/snippet}
+
+{#snippet badge(s, small)}
+  <span class="site s-{s.id}" class:sm={small} title={s.label}>
+    {#if s.id === "yt"}<svg viewBox="0 0 24 24" width={small ? 9 : 12} height={small ? 9 : 12}><path d="M8 5.5v13l11-6.5z" fill="currentColor" /></svg>
+    {:else if s.id === "ig"}<svg viewBox="0 0 24 24" width={small ? 10 : 13} height={small ? 10 : 13} fill="none" stroke="currentColor" stroke-width="2.4"><rect x="3.5" y="3.5" width="17" height="17" rx="5" /><circle cx="12" cy="12" r="4" /></svg>
+    {:else if s.id === "sp"}<svg viewBox="0 0 24 24" width={small ? 10 : 13} height={small ? 10 : 13} fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M5 9c4.5-1.5 9.5-1 14 1.5M6 13c3.6-1 7.4-.6 11 1.2M7 16.8c2.8-.7 5.5-.4 8 .9" /></svg>
+    {:else if s.id === "clip"}<Icon name="scissors" size={small ? 10 : 13} />
+    {:else if s.id === "comp"}<Icon name="layers" size={small ? 10 : 13} />
+    {:else if s.id === "web"}<Icon name="link" size={small ? 10 : 13} />
+    {:else}<b>{GLYPH[s.id] ?? s.label[0]}</b>{/if}
+  </span>
+{/snippet}
+
+{#snippet tags(d)}
+  {#if d.media}<span class="kb fmt">{d.media_label}</span>{#if d.section_label}<span class="kb cutb" title="Extrait seulement"><Icon name="scissors" size={10} />{d.section_label}</span>{/if}{:else}<span class="kb k-{d.kind}">{KIND_LABEL[d.kind] ?? "Autre"}</span>{/if}
+  {#if d.platform}<ConsoleBadge platform={d.platform} small />{/if}
+{/snippet}
+
+{#snippet meta(d, pct)}
+  <div class="meta">
+    {#if d.st !== "done" && d.size > 0}<b>{pct.toFixed(1).replace(".", ",")} %</b><span>{fmtSize(d.done)} / {fmtSize(d.size)}</span>{/if}
+    {#if d.st === "done"}<span>{fmtSize(d.size)}</span>{/if}
+    {#if d.st === "running" && !d.retrying && d.speed > 0}
+      <span class="spd">↓ {fmtSpeed(d.speed)}</span>
+      {#if d.size > 0 && fmtEta(d.eta)}<span>fin dans {fmtEta(d.eta)}</span>{/if}
+      {#if d.conns > 1}<span class="conns" title="Connexions en parallèle">{d.conns} connexions</span>{/if}
+    {/if}
+    {#if statusText(d)}<span class="stxt">{statusText(d)}</span>{/if}
+    {#if d.st !== "done" && d.size > 0 && !d.resumable}<span class="nores" title="Ce serveur ne permet pas de reprendre : une coupure fait repartir de zéro">sans reprise</span>{/if}
+  </div>
+{/snippet}
+
+{#snippet acts(d)}
+  {#if d.st === "running" || d.st === "queued"}
+    <button class="ib" title="Pause" onclick={() => act([d], "pause")}><Icon name="pause" size={15} /></button>
+  {:else if d.st === "paused"}
+    <button class="ib hot" title="Reprendre" onclick={() => act([d], "resume")}><Icon name="play" size={15} /></button>
+  {:else if d.st === "error"}
+    <button class="ib" title="Réessayer" onclick={() => act([d], "resume")}><Icon name="refresh" size={15} /></button>
+  {:else if romOf(d)}
+    {#if isArchive(d) && !d.rom}
+      <button class="tb" disabled={extracting === d.id} title="Décompresser l'archive à côté d'elle : le jeu est prêt à lancer" onclick={() => extract(d)}>
+        {#if extracting === d.id}<span class="spin"></span>Extraction…{:else}<Icon name="layers" size={14} />Extraire{/if}
+      </button>
+    {/if}
+    <button class="tb play" title="Jouer avec {emuById(romOf(d).emu)?.name ?? 'l\'émulateur'}" onclick={() => play(romOf(d))}><Icon name="play" size={14} />Jouer</button>
+  {:else}
+    <button class="ib" title="Ouvrir" onclick={() => openItem(d)}><Icon name="open" size={15} /></button>
+  {/if}
+  <button class="ib" title="Ouvrir le dossier" onclick={() => reveal(d.path, d.dir).catch((e) => flash(String(e)))}><Icon name="folder" size={15} /></button>
+  <button class="ib" title="Plus d'actions" onclick={(e) => itemMenu(e, d)}><Icon name="more" size={15} /></button>
+{/snippet}
+
+<svelte:window onkeydown={onkey} onpointerdown={bandDown} onpointermove={bandMove} onpointerup={bandUp} onpointercancel={bandUp} />
+
+{#if band?.moved}
+  <div class="band" style="left:{Math.min(band.x0, band.x1)}px;top:{Math.min(band.y0, band.y1)}px;width:{Math.abs(band.x1 - band.x0)}px;height:{Math.abs(band.y1 - band.y0)}px"></div>
+{/if}
+
+{#if selItems.length}
+  <div class="selbar" transition:fly={{ y: 20, duration: 160 }}>
+    <span class="count"><b>{selItems.length}</b>sélectionné{selItems.length > 1 ? "s" : ""}</span>
+    {#if selItems.some(isBusy)}<button onclick={() => act(selItems.filter(isBusy), "pause")}><Icon name="pause" size={14} />Pause</button>{/if}
+    {#if selItems.some((d) => d.st === "paused")}<button onclick={() => act(selItems.filter((d) => d.st === "paused"), "resume")}><Icon name="play" size={14} />Reprendre</button>{/if}
+    {#if selItems.some((d) => d.st === "error")}<button onclick={() => act(selItems.filter((d) => d.st === "error"), "resume")}><Icon name="refresh" size={14} />Réessayer</button>{/if}
+    <button onclick={() => moveTo(selItems)}><Icon name="move" size={14} />Déplacer</button>
+    <button onclick={() => copyLinks(selItems)}><Icon name="copy" size={14} />Copier les liens</button>
+    <button class="danger" title="Retirer de la liste (Suppr) · les fichiers terminés restent" onclick={() => remove(selItems, false)}><Icon name="close" size={14} />Retirer</button>
+    {#if selItems.some((d) => d.done > 0)}<button class="danger" title="Supprimer avec les fichiers (Maj+Suppr)" onclick={() => remove(selItems, true)}><Icon name="trash" size={14} />Supprimer</button>{/if}
+    <button class="x" title="Désélectionner (Échap)" onclick={() => (sel = new Set())}><Icon name="close" size={14} /></button>
+  </div>
+{/if}
 
 <style>
   .dls { display: flex; flex-direction: column; gap: 12px; padding: 4px 4px 24px; max-width: 1100px; margin: 0 auto; width: 100%; }
@@ -452,4 +688,82 @@
   .empty p { margin: 0; max-width: 460px; line-height: 1.55; font-size: 13px; }
   .empty b { color: var(--text); font-size: 15px; }
   .hint { color: var(--muted); font-size: 13px; padding: 20px 6px; margin: 0; }
+
+  /* Bascule liste / cartes */
+  .seg.vw button { padding: 0 9px; }
+
+  /* Sélection */
+  li.sel, .dc.sel { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 1.5px var(--accent); }
+  li.sel:hover { background: var(--accent-soft); }
+  .thumb { position: relative; }
+  .thumb .ico { display: grid; place-items: center; }
+  .corner { position: absolute; left: 3px; bottom: 3px; }
+
+  /* Logo du site d'origine */
+  .site { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: #475569; color: white; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); font-size: 12px; line-height: 1; }
+  .site.sm { width: 16px; height: 16px; border-radius: 4px; font-size: 9.5px; }
+  .site b { font-weight: 800; font-family: system-ui, sans-serif; }
+  .s-yt { background: #ff0033; }
+  .s-x, .s-tt, .s-th, .s-kk { background: #111; }
+  .s-kk { color: #53fc18; }
+  .s-ig { background: radial-gradient(circle at 30% 110%, #fdc468 0%, #fa6d3e 30%, #d62976 60%, #962fbf 85%, #4f5bd5 100%); }
+  .s-fb { background: #1877f2; }
+  .s-vm { background: #1ab7ea; }
+  .s-dm { background: #0d0d0d; }
+  .s-tw { background: #9146ff; }
+  .s-rd { background: #ff4500; }
+  .s-sc { background: #ff5500; }
+  .s-sp { background: #1db954; color: #111; }
+  .s-bl { background: #00a1d6; }
+  .s-bs { background: #1185fe; }
+  .s-pi { background: #e60023; }
+  .s-bc { background: #1da0c3; font-size: 10px; }
+  .s-st { background: #0f90fa; }
+  .s-sn { background: #fffc00; color: #111; }
+  .s-clip, .s-comp { background: var(--accent); }
+  .s-file { background: rgb(0 0 0 / 0.55); backdrop-filter: blur(4px); }
+
+  /* Vue cartes */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; user-select: none; }
+  .dc { position: relative; display: flex; flex-direction: column; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); overflow: hidden; cursor: pointer; transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s; }
+  .dc:hover { border-color: var(--accent); box-shadow: 0 8px 22px rgb(0 0 0 / 0.1), 0 0 0 1px var(--accent); transform: translateY(-2px); }
+  .dc:hover .title { color: var(--accent); }
+  .dc.st-error { border-color: rgb(225 29 72 / 0.35); }
+  .cv { position: relative; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; background: var(--chip); color: var(--muted); }
+  .cv > img { position: relative; width: 100%; height: 100%; object-fit: cover; }
+  .cv.poster > img:not(.blur) { object-fit: contain; filter: drop-shadow(0 4px 12px rgb(0 0 0 / 0.35)); padding: 8px 0; }
+  .cv > img.blur { position: absolute; inset: 0; object-fit: cover; filter: blur(18px) saturate(1.3); transform: scale(1.2); opacity: 0.75; }
+  .cv .ico { display: grid; place-items: center; opacity: 0.7; }
+  .cv-tl { position: absolute; top: 8px; left: 8px; display: flex; gap: 4px; }
+  .cv-tr { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 7px; border-radius: 6px; background: rgb(0 0 0 / 0.6); backdrop-filter: blur(4px); color: white; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tick { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: white; box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); }
+  .dc.sel .cv-tr { opacity: 0; }
+  .cv-pct { position: absolute; left: 8px; bottom: 11px; padding: 2px 7px; border-radius: 6px; background: rgb(0 0 0 / 0.6); color: white; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .cv-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgb(0 0 0 / 0.3); }
+  .cv-bar span { display: block; height: 100%; background: var(--accent); transition: width 0.8s ease; }
+  .st-paused .cv-bar span { background: #f59e0b; }
+  .retry .cv-bar span, .st-queued .cv-bar span { background: var(--muted); }
+  .st-error .cv-bar span { background: var(--err); }
+  .dc-body { display: flex; flex-direction: column; gap: 3px; padding: 9px 11px 4px; min-width: 0; }
+  .title.t2 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.3; min-height: 2.6em; }
+  .dc-body .fname.rom { color: #16a34a; font-weight: 600; }
+  .dc-acts { display: flex; align-items: center; justify-content: flex-end; gap: 2px; margin-top: auto; padding: 0 6px 6px; }
+  .dc-acts .tb { height: 30px; padding: 0 10px; }
+  .dc-acts .tb.play { margin-right: auto; margin-left: 4px; }
+
+  .band { position: fixed; z-index: 30; border: 1.5px solid var(--accent); background: var(--accent-soft); border-radius: 4px; pointer-events: none; }
+  .selbar {
+    position: fixed; left: 50%; bottom: 22px; translate: -50% 0; z-index: 35; display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 8px; border-radius: 18px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 82%, white), var(--accent) 45%, color-mix(in srgb, var(--accent) 80%, black));
+    color: white;
+    box-shadow: 0 14px 34px -8px color-mix(in srgb, var(--accent) 60%, transparent), 0 2px 6px rgb(0 0 0 / 0.15), inset 0 1px 0 rgb(255 255 255 / 0.25);
+  }
+  .selbar .count { display: inline-flex; align-items: center; gap: 8px; padding: 0 12px 0 2px; margin-right: 4px; border-right: 1px solid rgb(255 255 255 / 0.25); font-weight: 700; font-size: 13px; white-space: nowrap; }
+  .selbar .count b { display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 13px; background: white; color: var(--accent); font-size: 13px; font-weight: 800; }
+  .selbar button { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border: 0; border-radius: 11px; background: none; color: white; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.12s; }
+  .selbar button:hover { background: rgb(255 255 255 / 0.18); }
+  .selbar button.danger { background: rgb(255 255 255 / 0.12); margin-left: 2px; }
+  .selbar button.danger:hover { background: #e11d48; }
+  .selbar .x { width: 34px; padding: 0; justify-content: center; margin-left: 4px; background: rgb(0 0 0 / 0.15); border-radius: 50%; }
 </style>

@@ -826,7 +826,7 @@
   let band = $state(null);
   let bandBase = new Set();
   function bandDown(e) {
-    // Onglet DL : pas de sélection par rectangle (la capture du pointeur volait les clics et doubles-clics des lignes)
+    // Onglet DL : Downloads.svelte gère sa propre sélection (sans capture du pointeur)
     if (view === "downloads" || e.button !== 0 || e.target.closest(".card, button, input, select, a, .dls")) return;
     bandBase = e.ctrlKey || e.shiftKey ? new Set(sel) : new Set();
     band = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
@@ -863,10 +863,10 @@
       else if (selectedKey) selectedKey = null;
       else if (sel.size) sel = new Set();
       else if (typing) (query = ""), e.target.blur();
-    } else if (!typing && !settingsOpen && !selectedKey && e.ctrlKey && e.key.toLowerCase() === "a") {
+    } else if (!typing && view !== "downloads" && !settingsOpen && !selectedKey && e.ctrlKey && e.key.toLowerCase() === "a") {
       e.preventDefault();
       sel = new Set(visible.map((g) => g.key));
-    } else if (!typing && !settingsOpen && e.key === "Delete" && selItems.length) {
+    } else if (!typing && view !== "downloads" && !settingsOpen && e.key === "Delete" && selItems.length) {
       remove(selItems, e.shiftKey);
     } else if (!typing && !settingsOpen && /^[1-9]$/.test(e.key) && KINDS[Number(e.key) - 1]) {
       prefs.kind = KINDS[Number(e.key) - 1].id;
