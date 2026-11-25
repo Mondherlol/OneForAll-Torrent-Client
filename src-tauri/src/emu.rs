@@ -100,11 +100,11 @@ fn sniff_disc(p: &Path) -> Option<&'static str> {
     // Les répertoires et SYSTEM.CNF sont au début du disque
     let mut data = Vec::new();
     let _ = f.take(8 << 20).read_to_end(&mut data);
-    sniff_disc_bytes(&data, std::fs::metadata(p).map(|m| m.len()).unwrap_or(0))
+    sniff_disc_bytes(&data)
 }
 
 /// Début d'une image disque (8 Mo) → émulateur
-fn sniff_disc_bytes(data: &[u8], size: u64) -> Option<&'static str> {
+fn sniff_disc_bytes(data: &[u8]) -> Option<&'static str> {
     if data.len() >= 0x20 && (data[0x18..0x1C] == [0x5D, 0x1C, 0x9E, 0xA3] || data[0x1C..0x20] == [0xC2, 0x33, 0x9F, 0x3D]) {
         return Some("dolphin");
     }
@@ -117,7 +117,9 @@ fn sniff_disc_bytes(data: &[u8], size: u64) -> Option<&'static str> {
     if has(data, b"cdrom:") || has(data, b"PLAYSTATION") {
         return Some("duckstation");
     }
-    (size > 1 << 30).then_some("pcsx2")
+    // Disque PS2 dont le contenu de SYSTEM.CNF est plus loin : son nom figure dans le répertoire du disque (ISO 9660).
+    // Pas de « gros fichier = PS2 » : les archives d'installeurs (FitGirl fg-01.bin…) pèsent des dizaines de Go.
+    (has(data, b"CD001") && has(data, b"SYSTEM.CNF")).then_some("pcsx2")
 }
 
 /// .cue : on regarde la piste de données qu'elle désigne (PS1 le plus souvent).
@@ -191,7 +193,7 @@ fn detect_archive(p: &Path) -> Option<&'static Emu> {
     // Image disque (.iso…) : on lit son début directement dans l'archive (PSP, PS2, GameCube…)
     for (entry, x) in entries.iter().zip(&exts) {
         if matches!(x.as_str(), "iso" | "bin" | "img") {
-            if let Some(m) = archive_head(p, entry).and_then(|d| sniff_disc_bytes(&d, 0)).and_then(get) {
+            if let Some(m) = archive_head(p, entry).and_then(|d| sniff_disc_bytes(&d)).and_then(get) {
                 return Some(m);
             }
         }
@@ -463,11 +465,13 @@ pub fn find_roms(path: &Path) -> Vec<Rom> {
         walkdir::WalkDir::new(path).max_depth(5).into_iter().flatten().filter(|e| e.file_type().is_file()).map(|e| e.into_path()).collect()
     };
     let has_cue = files.iter().any(|p| ext(p) == "cue");
+    // Dossiers avec un .exe (setup.exe d'un repack FitGirl/DODI…) : leurs .bin/.img sont des archives d'installation
+    let exe_dirs: std::collections::HashSet<&Path> = files.iter().filter(|p| ext(p) == "exe").filter_map(|p| p.parent()).collect();
     let mut roms: Vec<Rom> = files
         .iter()
         .filter(|p| (is_rom(p) && !(has_cue && ext(p) == "bin")) || (is_archive(p) && detect_archive(p).is_some()))
         // Les .bin/.img seuls sont trop génériques : gardés seulement s'ils ressemblent à un disque de jeu
-        .filter(|p| !matches!(ext(p).as_str(), "bin" | "img") || detect(p).is_some())
+        .filter(|p| !matches!(ext(p).as_str(), "bin" | "img") || (!p.parent().is_some_and(|d| exe_dirs.contains(d)) && detect(p).is_some()))
         .map(|p| rom_info(p))
         .collect();
     roms.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -558,6 +562,24 @@ mod tests {
         assert_eq!(detect(&dir.join("psp.iso")).map(|m| m.id), Some("ppsspp"));
         assert_eq!(detect(&dir.join("ps2.iso")).map(|m| m.id), Some("pcsx2"));
         assert_eq!(detect(&dir.join("ps2.cue")).map(|m| m.id), Some("pcsx2"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn installer_bins_are_not_roms() {
+        // Repack FitGirl : setup.exe + fg-01.bin (archive, sans signature de disque)
+        let dir = std::env::temp_dir().join("oneforall-emu-repack");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("setup.exe"), b"MZ").unwrap();
+        std::fs::write(dir.join("fg-01.bin"), vec![7u8; 2 << 20]).unwrap();
+        assert_eq!(detect(&dir.join("fg-01.bin")).map(|m| m.id), None);
+        assert!(find_roms(&dir).is_empty());
+        // Même un .bin qui ressemble à un disque est ignoré à côté d'un installeur
+        let mut ps2 = vec![0u8; 4096];
+        ps2[3000..3005].copy_from_slice(b"BOOT2");
+        std::fs::write(dir.join("fg-02.bin"), &ps2).unwrap();
+        assert!(find_roms(&dir).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

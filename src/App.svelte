@@ -269,6 +269,24 @@
   // Torrents ajoutés sans démarrer, en attente du choix des fichiers (un à la fois)
   let staged = $state([]);
   let pickHidden = $state(false);
+  const autoPick = new Set(); // ajoutés via « Télécharger » dans la recherche : un seul épisode → démarre direct
+  let launched = false;
+  // Fin du choix des fichiers d'un torrent : une fois la file vidée, si quelque chose a démarré
+  // depuis la recherche, on la ferme et on montre la bibliothèque
+  function pickDone(started) {
+    autoPick.delete(staged[0]);
+    staged = staged.slice(1);
+    if (started) launched = true;
+    if (!staged.length) {
+      if (launched && addOpen) {
+        addOpen = false;
+        addInit = null;
+        view = "torrents";
+      }
+      launched = false;
+    }
+    refresh();
+  }
   function onStaged(res) {
     if (res.errors?.length) flash(res.errors[0]);
     if (res.direct?.length) {
@@ -278,7 +296,10 @@
       view = "downloads";
       refreshDownloads();
     }
-    if (res.hashes?.length) staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];
+    if (res.hashes?.length) {
+      if (res.auto) res.hashes.forEach((h) => autoPick.add(h));
+      staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];
+    }
     refresh();
   }
 
@@ -1126,7 +1147,7 @@
 {/if}
 
 {#if addOpen}
-  <AddTorrent {torrents} initial={addInit} onclose={() => ((addOpen = false), (addInit = null))} onadded={onStaged} />
+  <AddTorrent {torrents} pending={staged} initial={addInit} onclose={() => ((addOpen = false), (addInit = null))} onadded={onStaged} />
 {/if}
 
 {#if staged.length && !pickHidden}
@@ -1134,7 +1155,8 @@
     <PickFiles
       hash={staged[0]}
       {torrents}
-      onclose={() => ((staged = staged.slice(1)), refresh())}
+      auto={autoPick.has(staged[0])}
+      onclose={pickDone}
       onfreespace={() => ((pickHidden = true), (settingsTab = "storage"), (settingsOpen = true))}
     />
   {/key}

@@ -79,6 +79,11 @@ export const openPath = withApp((path) => invoke("open_path", { path }));
 export const readBook = withApp((path) => invoke("read_book", { path }));
 export const appsList = () => invoke("apps_list");
 export const appInstall = (id) => invoke("app_install", { id });
+// AllForOne (optimisation PC / connexion pour le jeu)
+export const allforoneStatus = () => invoke("allforone_status");
+export const allforoneInstall = () => invoke("allforone_install");
+export const allforoneLaunch = () => invoke("allforone_launch");
+export const allforoneUninstall = () => invoke("allforone_uninstall");
 
 // ---------- émulateurs ----------
 export const emuList = () => invoke("emu_list");

@@ -1,3 +1,4 @@
+mod allforone;
 mod apps;
 mod artwork;
 mod assoc;
@@ -630,6 +631,34 @@ async fn app_install(app: tauri::AppHandle, id: String) -> Result<String, String
     })
     .await?;
     Ok(exe.display().to_string())
+}
+
+/// AllForOne : installé ? où ? quelle version ?
+#[tauri::command]
+fn allforone_status() -> allforone::Status {
+    allforone::status()
+}
+
+/// Installe AllForOne (avancement : événement « app-progress » avec id « allforone ») puis le lance
+#[tauri::command]
+async fn allforone_install(app: tauri::AppHandle) -> Result<String, String> {
+    let a = app.clone();
+    let exe = allforone::install(move |pct, msg| {
+        let _ = a.emit("app-progress", serde_json::json!({ "id": "allforone", "pct": pct, "msg": msg }));
+    })
+    .await?;
+    allforone::launch()?;
+    Ok(exe.display().to_string())
+}
+
+#[tauri::command]
+fn allforone_launch() -> Result<(), String> {
+    allforone::launch()
+}
+
+#[tauri::command]
+fn allforone_uninstall() -> Result<(), String> {
+    allforone::uninstall()
 }
 
 /// Ouvre une BD, un manga ou un livre dans SumatraPDF (« NO_READER » s’il n’est pas installé)
@@ -2450,6 +2479,10 @@ pub fn run() {
             empty_recycle_bin,
             apps_list,
             app_install,
+            allforone_status,
+            allforone_install,
+            allforone_launch,
+            allforone_uninstall,
             read_book,
             host_download,
             is_host_link,

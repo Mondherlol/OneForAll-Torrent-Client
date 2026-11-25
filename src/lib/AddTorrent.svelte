@@ -15,7 +15,8 @@
   import icoRomsfun from "../assets/sources/romsfun.png";
   import icoWowroms from "../assets/sources/wowroms.jpg";
 
-  let { torrents, onclose, onadded, initial = null } = $props();
+  // pending : torrents ajoutés en attente du choix des fichiers (fenêtre suivante)
+  let { torrents, onclose, onadded, initial = null, pending = [] } = $props();
 
   const TABS = [
     { id: "search", label: "Rechercher", icon: "search" },
@@ -101,7 +102,8 @@
     if (results) search();
   }
   let links = $state("");
-  let added = $state(new Set());
+  let addedHash = $state(new Map()); // url du résultat → hash du torrent ajouté
+  let busy = $state(new Set()); // urls en cours d'ajout
   let inputEl = $state();
 
   $effect(() => {
@@ -109,7 +111,13 @@
     setTimeout(() => inputEl?.focus(), 50);
   });
 
-  const have = $derived(new Set(torrents.map((t) => t.hash.toLowerCase())));
+  // « Déjà ajouté » = le torrent est vraiment dans qBittorrent (ou en attente du choix des fichiers).
+  // Annulé dans la fenêtre des fichiers → il disparaît, et le bouton Télécharger revient.
+  const have = $derived(new Set([...torrents.map((t) => t.hash.toLowerCase()), ...pending.map((h) => h.toLowerCase())]));
+  const isHave = (r) => {
+    const h = (r.hash || addedHash.get(r.url) || "").toLowerCase();
+    return !!h && have.has(h);
+  };
 
   let run = 0;
   /** only : chercher sur ce site seulement (clic sur un jeu populaire d'un site) */
@@ -121,6 +129,7 @@
     remember(q);
     asked = q;
     selected = null;
+    picked = new Set();
     kindF = "all";
     srcF = "all";
     results = [];
@@ -147,14 +156,48 @@
     if (r.source === "romsfun") return toggleRom(r);
     if (r.source === "nxbrew") return select(r);
     if (r.source === "wowroms") return openUrl(r.page);
+    return addMany([r]);
+  }
+
+  // Plusieurs torrents d'un coup (épisodes d'une même release). auto : un torrent d'un seul
+  // épisode/fichier démarre sans repasser par la fenêtre de choix des fichiers.
+  async function addMany(list, grp = null) {
+    list = list.filter((r) => !busy.has(r.url) && !isHave(r));
+    if (!list.length) return;
+    busy = new Set([...busy, ...list.map((r) => r.url)]);
+    // Résultat d'une recherche d'épisode : il rejoint la série, même si son nom diffère
+    const grpLink = link && grp?.list.some((e) => matchesEp(e.r.title)) ? link : null;
+    const res = { hashes: [], errors: [], direct: [], auto: true };
     try {
-      // Résultat d'une recherche d'épisode : il rejoint la série, même si son nom diffère
-      const res = await stageTorrents([r.url], [], link && matchesEp(r.title) ? link : null);
-      if (res.hashes.length) added = new Set([...added, r.url]);
+      const outs = await pool(list, 4, (r) =>
+        stageTorrents([r.url], [], grpLink ?? (link && matchesEp(r.title) ? link : null)).catch((e) => ({ hashes: [], errors: [String(e)], direct: [] })),
+      );
+      const m = new Map(addedHash);
+      outs.forEach((o, i) => {
+        res.hashes.push(...o.hashes);
+        res.errors.push(...o.errors);
+        res.direct.push(...(o.direct ?? []));
+        if (o.hashes[0]) m.set(list[i].url, o.hashes[0].toLowerCase());
+      });
+      addedHash = m;
+      picked = new Set([...picked].filter((u) => !list.some((r) => r.url === u)));
       onadded(res);
-    } catch (e) {
-      flash(String(e));
+    } finally {
+      busy = new Set([...busy].filter((u) => !list.some((r) => r.url === u)));
     }
+  }
+  async function pool(list, n, fn) {
+    const out = new Array(list.length);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(n, list.length) }, async () => {
+        while (next < list.length) {
+          const k = next++;
+          out[k] = await fn(list[k]);
+        }
+      }),
+    );
+    return out;
   }
 
   async function addLinks() {
@@ -294,6 +337,79 @@
     return new RegExp(`(?:^|[\\s_\\-\\[(.E])0*${n}(?:v\\d)?(?=[\\s_\\-\\])\\.]|$)`, "i").test(title);
   };
   const sameTeam = (r) => !!prefer && r.title.toLowerCase().includes(prefer.toLowerCase());
+
+  // ---------- même release, un torrent par épisode → un seul bloc ----------
+  // « [SubsPlease] Frieren - 05 (1080p) [A1B2C3D4].mkv » → { ep: 5, key: "subsplease frieren ## 1080p", name: "[SubsPlease] Frieren (1080p)" }
+  const pad2 = (n) => String(n).padStart(2, "0");
+  function epOf(title) {
+    const t = title.replace(/\.(mkv|mp4|avi|m4v|torrent)$/i, "");
+    // Packs (plusieurs épisodes dans un torrent) : pas regroupés
+    if (/\b(batch|complete|compl[eè]te|int[eé]grale)\b/i.test(t) || /S\d{1,2}E\d{1,4}\s?[-~]\s?E?\d{1,4}/i.test(t)) return null;
+    const rg = t.match(/(?:^|[^\dA-Za-z])E?(\d{1,4})(?:-|~|\s~\s)E?(\d{1,4})(?![\dp])/i);
+    if (rg && +rg[2] > +rg[1]) return null;
+    let m, ep, season = null, token, repl = " ## ";
+    if ((m = t.match(/S(\d{1,2})[ ._-]?E(\d{1,4})(?!\d)/i))) {
+      season = +m[1];
+      ep = +m[2];
+      token = m[0];
+      repl = ` S${pad2(season)} ## `;
+    } else if ((m = t.match(/(?:\s|_)-(?:\s|_)(\d{1,4})(?:v\d)?(?=[\s_.[(]|$)/)) && !(m[1].length === 4 && +m[1] > 1950 && +m[1] < 2040)) {
+      ep = +m[1];
+      token = m[0];
+    } else if ((m = t.match(/\b(?:E|EP|[EÉ]pisode)[ ._]?(\d{1,4})(?!\d)/i))) {
+      ep = +m[1];
+      token = m[0];
+    } else return null;
+    const noCrc = (s) => s.replace(/\[[0-9A-F]{8}\]/gi, "");
+    const key = words(noCrc(t.replace(token, repl))).join(" ").replace(/\s+/g, " ") + (season != null ? ` s${season}` : "");
+    let name = noCrc(t.replace(token, season != null ? ` S${pad2(season)} ` : " "));
+    if ((name.match(/[._]/g) ?? []).length > (name.match(/ /g) ?? []).length) name = name.replace(/[._]/g, " ");
+    name = name.replace(/\s+/g, " ").replace(/\s+([-)\]])/g, " $1").replace(/(\s-)+\s*(?=[([]|$)/g, " ").trim();
+    return { ep, season, key, name };
+  }
+  // Liste affichée : chaque release à plusieurs épisodes devient un bloc, à la place de son meilleur résultat
+  const items = $derived.by(() => {
+    const groups = new Map();
+    const of = new Map(); // url → groupe
+    for (const r of shown) {
+      if (r.source !== "c411" && r.source !== "nyaa") continue;
+      const e = epOf(r.title);
+      if (!e) continue;
+      const k = `${r.source}|${e.key}`;
+      let g = groups.get(k);
+      if (!g) groups.set(k, (g = { key: k, name: e.name, season: e.season, head: r, eps: new Map(), n: 0 }));
+      const cur = g.eps.get(e.ep);
+      if (!cur || r.seeders > cur.seeders) g.eps.set(e.ep, r);
+      of.set(r.url, g);
+    }
+    const out = [];
+    const done = new Set();
+    for (const r of shown) {
+      const g = of.get(r.url);
+      if (!g || g.eps.size < 2) {
+        out.push({ r });
+        continue;
+      }
+      if (done.has(g.key)) continue;
+      done.add(g.key);
+      const list = [...g.eps.entries()].sort((a, b) => a[0] - b[0]).map(([ep, r], i) => ({ ep, r, i, label: pad2(ep) }));
+      out.push({ g: { ...g, list } });
+    }
+    return out;
+  });
+  let picked = $state(new Set()); // épisodes cochés (urls)
+  let lastPick = null; // { key, i } : Maj+clic sélectionne la plage
+  function pickEp(g, e, range) {
+    const s = new Set(picked);
+    if (range && lastPick?.key === g.key) {
+      const on = !s.has(e.r.url);
+      const [a, b] = [Math.min(lastPick.i, e.i), Math.max(lastPick.i, e.i)];
+      for (const x of g.list.slice(a, b + 1)) if (!isHave(x.r)) on ? s.add(x.r.url) : s.delete(x.r.url);
+    } else s.has(e.r.url) ? s.delete(e.r.url) : s.add(e.r.url);
+    lastPick = { key: g.key, i: e.i };
+    picked = s;
+  }
+  const unpick = (g) => (picked = new Set([...picked].filter((u) => !g.list.some((e) => e.r.url === u))));
 
   // ---------- affiches (chargées quand la ligne devient visible) ----------
   function lazyArt(node, r) {
@@ -448,7 +564,8 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
+<!-- Échap pendant le choix des fichiers ne ferme que cette fenêtre-là -->
+<svelte:window onkeydown={(e) => e.key === "Escape" && !pending.length && onclose()} />
 
 <div class="backdrop" transition:fade={{ duration: 140 }} onclick={onclose} role="presentation"></div>
 <div class="modal" transition:fly={{ y: 16, duration: 200 }} role="dialog" aria-label="Ajouter un torrent">
@@ -546,8 +663,62 @@
           </div>
         {:else if results}
           <ul>
-            {#each shown as r (r.url)}
-              {@const already = have.has(r.hash) || added.has(r.url)}
+            {#each items as it (it.g ? it.g.key : it.r.url)}
+              {#if it.g}
+                {@const g = it.g}
+                {@const art = arts[g.head.art_key]}
+                {@const missing = g.list.filter((e) => !isHave(e.r))}
+                {@const chosen = missing.filter((e) => picked.has(e.r.url))}
+                {@const working = g.list.some((e) => busy.has(e.r.url))}
+                <li class="grp" class:sel={g.list.some((e) => selected?.url === e.r.url)} use:lazyArt={g.head}>
+                  <div class="g-top">
+                    <button class="row" onclick={() => select(g.list.at(-1).r)} title="Aperçu du dernier épisode">
+                      <span class="thumb k-{g.head.kind}">
+                        {#if g.head.thumb || art?.url}<img src={g.head.thumb || art.url} alt="" loading="lazy" />{:else}<Icon name={g.head.kind} size={18} />{/if}
+                      </span>
+                      <span class="rbody">
+                        <span class="rtitle" title={g.name}>{g.name}</span>
+                        <span class="rmeta">
+                          {#if SOURCES[g.head.source]}<span class="rsrc" title={SOURCES[g.head.source].label}>{@render sico(g.head.source)}</span>{/if}
+                          <span class="kb k-{g.head.kind}">{KIND_LABEL[g.head.kind] ?? "Autre"}</span>
+                          <span class="g-n">{g.list.length} épisodes{g.season != null ? ` · Saison ${g.season}` : ""}</span>
+                          {#if g.head.lang}<span class="lb">{g.head.lang.toUpperCase()}</span>{/if}
+                          {#if sameTeam(g.head)}<span class="team" title="Même équipe que ton dernier épisode">★ {prefer}</span>{/if}
+                          <b class="seed">↑ {Math.max(...g.list.map((e) => e.r.seeders))}</b>
+                          <span>{fmtSize(g.list.reduce((s, e) => s + e.r.size, 0))} en tout</span>
+                          <span>{fmtAgo(Math.max(...g.list.map((e) => ts(e.r.date))))}</span>
+                        </span>
+                      </span>
+                    </button>
+                    {#if !missing.length}
+                      <span class="done"><Icon name="check" size={15} />Tout est ajouté</span>
+                    {:else}
+                      {#if chosen.length}<button class="g-clear" onclick={() => unpick(g)}>Décocher</button>{/if}
+                      <button class="g-go" disabled={working} onclick={() => addMany((chosen.length ? chosen : missing).map((e) => e.r), g)}>
+                        {#if working}<span class="spinner light"></span>{:else}<Icon name="down" size={14} />{/if}
+                        {chosen.length ? `Télécharger ${chosen.length} ép.` : missing.length === g.list.length ? `Tout télécharger (${missing.length})` : `Les ${missing.length} manquants`}
+                      </button>
+                    {/if}
+                  </div>
+                  <div class="g-eps" title="Clique sur des épisodes pour les choisir · Maj+clic : une plage">
+                    {#each g.list as e (e.r.url)}
+                      {@const h = isHave(e.r)}
+                      <button
+                        class="epc"
+                        class:on={picked.has(e.r.url)}
+                        class:have={h}
+                        class:dead={e.r.seeders === 0}
+                        class:busy={busy.has(e.r.url)}
+                        disabled={h}
+                        onclick={(ev) => pickEp(g, e, ev.shiftKey)}
+                        title={`${e.r.title}\n↑ ${e.r.seeders} · ${fmtSize(e.r.size)}${h ? " · déjà ajouté" : ""}`}
+                      >{#if h}<Icon name="check" size={11} />{/if}{e.label}</button>
+                    {/each}
+                  </div>
+                </li>
+              {:else}
+              {@const r = it.r}
+              {@const already = isHave(r)}
               {@const art = arts[r.art_key]}
               <li class:sel={selected?.url === r.url || romOpen === r.url} class:open={romOpen === r.url} use:lazyArt={r}>
                 <button class="row" onclick={() => select(r)}>
@@ -572,7 +743,7 @@
                 {#if already}
                   <span class="done" title="Déjà ajouté"><Icon name="check" size={15} /></span>
                 {:else}
-                  <button class="dl" class:chev={r.source === "romsfun"} class:up={romOpen === r.url} title={r.source === "wowroms" ? "Ouvrir sur WowRoms" : r.source === "romsfun" ? "Choisir la version" : "Télécharger"} onclick={() => addOne(r)}><Icon name={r.source === "wowroms" ? "open" : "down"} size={15} /></button>
+                  <button class="dl" class:chev={r.source === "romsfun"} class:up={romOpen === r.url} disabled={busy.has(r.url)} title={r.source === "wowroms" ? "Ouvrir sur WowRoms" : r.source === "romsfun" ? "Choisir la version" : "Télécharger"} onclick={() => addOne(r)}>{#if busy.has(r.url)}<span class="spinner"></span>{:else}<Icon name={r.source === "wowroms" ? "open" : "down"} size={15} />{/if}</button>
                 {/if}
               </li>
               {#if romOpen === r.url}
@@ -598,6 +769,7 @@
                     <span class="v-hint">Ça part dans l'onglet <b>DL</b> · « Jouer » le lance dans le bon émulateur</span>
                   {/if}
                 </li>
+              {/if}
               {/if}
             {/each}
           </ul>
@@ -677,7 +849,7 @@
       {#if selected}
         <!-- Aperçu du torrent avant téléchargement -->
         {@const art = arts[selected.art_key]}
-        {@const already = have.has(selected.hash) || added.has(selected.url)}
+        {@const already = isHave(selected)}
         {@const isTorrent = selected.source === "c411" || selected.source === "nyaa"}
         <aside class="preview" transition:fly={{ x: 20, duration: 160 }}>
           <div class="pv-head">
@@ -744,7 +916,7 @@
             {#if already}
               <span class="done big"><Icon name="check" size={15} />Déjà ajouté</span>
             {:else if !["nxbrew", "romsfun", "wowroms"].includes(selected.source)}
-              <button class="btn primary" onclick={() => addOne(selected)}><Icon name="down" size={14} />Télécharger</button>
+              <button class="btn primary" disabled={busy.has(selected.url)} onclick={() => addOne(selected)}><Icon name="down" size={14} />Télécharger</button>
             {/if}
           </div>
         </aside>
@@ -907,6 +1079,27 @@
   .dl:hover { background: var(--accent); border-color: var(--accent); color: white; }
   .done { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--ok); font-size: 12.5px; font-weight: 700; padding: 0 9px; }
   .done.big { padding: 0 6px; }
+  .dl:disabled { cursor: progress; }
+
+  /* release en plusieurs torrents (un par épisode) */
+  .results li.grp { flex-direction: column; align-items: stretch; gap: 2px; margin: 3px 0; padding: 4px 8px 10px 4px; border: 1px solid var(--line); background: var(--surface); }
+  .results li.grp:hover { background: var(--surface); border-color: var(--line-strong); }
+  .results li.grp.sel { background: var(--surface); }
+  .g-top { display: flex; align-items: center; gap: 6px; }
+  .g-n { font-size: 10.5px; font-weight: 800; padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); }
+  .g-go { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 13px; border-radius: 9px; border: 0; background: var(--accent); color: white; font: inherit; font-size: 12.5px; font-weight: 650; white-space: nowrap; cursor: pointer; transition: filter 0.12s; }
+  .g-go:hover:not(:disabled) { filter: brightness(1.08); }
+  .g-go:disabled { opacity: 0.7; cursor: progress; }
+  .g-clear { flex: none; height: 30px; padding: 0 10px; border-radius: 8px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .g-clear:hover { background: var(--chip); color: var(--text); }
+  .g-eps { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 56px; max-height: 98px; overflow-y: auto; }
+  .epc { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 38px; height: 26px; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--bg-2); color: var(--text-2); font: inherit; font-size: 11.5px; font-weight: 750; font-variant-numeric: tabular-nums; cursor: pointer; transition: background 0.1s, border-color 0.1s, color 0.1s; }
+  .epc:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .epc.on, .epc.on:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: white; }
+  .epc.have { border-color: transparent; background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); cursor: default; }
+  .epc.dead:not(.on):not(.have) { opacity: 0.5; }
+  .epc.busy { animation: epbusy 0.9s ease-in-out infinite alternate; }
+  @keyframes epbusy { from { opacity: 1; } to { opacity: 0.4; } }
 
   /* filtres */
   .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 18px 10px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }

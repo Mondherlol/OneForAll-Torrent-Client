@@ -8,7 +8,8 @@
   import { confirmAsk, flash, ui } from "./ui.svelte.js";
   import { upd, checkUpdates, installUpdate } from "./updates.svelte.js";
   import { EMU_ICON, chooseExe, emus, installEmu, loadEmus, removeEmu } from "./emu.svelte.js";
-  import { openUrl } from "./api.js";
+  import { openUrl, allforoneStatus, allforoneInstall, allforoneLaunch, allforoneUninstall } from "./api.js";
+  import afoLogo from "../assets/allforone.png";
 
   let { prefs, torrents, tab = $bindable("general"), onclose } = $props();
 
@@ -77,6 +78,41 @@
       flash("Icône d'origine remise");
     } catch (e) {
       flash(String(e));
+    }
+  }
+
+  // AllForOne : installé depuis OneForAll, puis il se met à jour tout seul
+  let afo = $state(null);
+  let afoProg = $state(null);
+  const afoRefresh = () => allforoneStatus().then((s) => (afo = s)).catch(() => {});
+  $effect(() => {
+    if (tab === "general") afoRefresh();
+  });
+  async function afoInstall() {
+    afoProg = { pct: 0, msg: "Préparation…" };
+    const un = await listen("app-progress", (e) => e.payload.id === "allforone" && (afoProg = e.payload));
+    try {
+      await allforoneInstall();
+      flash("AllForOne installé ✓ (raccourcis sur le Bureau et dans le menu Démarrer)");
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      un();
+      afoProg = null;
+      afoRefresh();
+    }
+  }
+  const afoOpen = () => allforoneLaunch().catch((e) => flash(String(e)));
+  async function afoRemove() {
+    const ok = await confirmAsk("Désinstaller AllForOne ?", "L'appli et ses raccourcis sont supprimés. Tu pourras la réinstaller d'ici.", "Désinstaller", true);
+    if (!ok) return;
+    try {
+      await allforoneUninstall();
+      flash("AllForOne désinstallé");
+    } catch (e) {
+      flash(String(e));
+    } finally {
+      afoRefresh();
     }
   }
 
@@ -321,6 +357,29 @@
           </div>
         </div>
       {/if}
+
+      <!-- AllForOne : l'appli sœur (optimisation PC / connexion pour le jeu) -->
+      <div class="card">
+        <h3><Icon name="game" size={15} />Autres applis</h3>
+        <div class="srow">
+          <span class="sl afo">
+            <img class="afo-ico" src={afoLogo} alt="" />
+            <span class="afo-txt">
+              <b>AllForOne {#if afo?.installed && afo.version}<i class="st ok">v{afo.version}</i>{/if}</b>
+              <small>{afoProg ? `${afoProg.msg}${afoProg.pct ? ` · ${afoProg.pct} %` : ""}` : "Optimise ton PC et ta connexion pour le jeu : BOOST, ping, manette…"}</small>
+              {#if afoProg}<span class="afo-bar"><span style="width:{afoProg.pct ?? 0}%"></span></span>{/if}
+            </span>
+          </span>
+          <div class="ctl">
+            {#if afo?.installed}
+              <button class="btn sm" onclick={afoOpen}><Icon name="open" size={13} />Ouvrir</button>
+              {#if afo.managed}<button class="btn sm" title="Désinstaller AllForOne" onclick={afoRemove}><Icon name="trash" size={13} /></button>{/if}
+            {:else}
+              <button class="btn sm primary" disabled={!!afoProg} onclick={afoInstall}><Icon name="down" size={13} />{afoProg ? "Installation…" : "Installer"}</button>
+            {/if}
+          </div>
+        </div>
+      </div>
     {:else if tab === "folders"}
       <h3>Dossier par défaut de chaque type</h3>
       <p class="hint">
@@ -513,6 +572,13 @@
   .icon-row { gap: 10px; }
   .card.organize { margin-bottom: 18px; }
   .icon-prev { width: 44px; height: 44px; border-radius: 10px; box-shadow: var(--shadow-sm); }
+  .afo { gap: 12px; min-width: 0; flex: 1; }
+  .afo-ico { flex: none; width: 38px; height: 38px; border-radius: 10px; box-shadow: var(--shadow-sm); }
+  .afo-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .afo-txt b { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .afo-txt small { font-size: 12px; font-weight: 500; color: var(--muted); }
+  .afo-bar { display: block; height: 3px; max-width: 260px; border-radius: 3px; background: var(--chip); overflow: hidden; }
+  .afo-bar span { display: block; height: 100%; background: var(--accent); transition: width 0.2s; }
   /* version + mise à jour : une seule ligne compacte */
   .about { margin-top: auto; display: flex; align-items: center; gap: 6px; padding: 10px 6px 2px 10px; border-top: 1px solid var(--line); }
   .ver { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--text-2); font-variant-numeric: tabular-nums; }

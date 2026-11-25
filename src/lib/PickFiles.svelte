@@ -7,7 +7,9 @@
   import { KIND_LABEL, fmtSize } from "./model.js";
   import { arts, flash, wantArt } from "./ui.svelte.js";
 
-  let { hash, torrents, onclose, onfreespace } = $props();
+  // auto : ajouté depuis la recherche par un clic sur « Télécharger » → un torrent d'un seul épisode
+  // (ou d'un seul fichier) démarre directement, sans redemander. onclose(true) = lancé, onclose(false) = annulé.
+  let { hash, torrents, onclose, onfreespace, auto = false } = $props();
 
   let files = $state([]);
   let phase = $state("waiting"); // waiting → choose → starting
@@ -45,6 +47,10 @@
 
   async function ready(f) {
     files = f.sort((a, b) => collator.compare(a.name, b.name));
+    const videos = files.filter((x) => VIDEO.test(x.name)).length;
+    const size = files.reduce((s, x) => s + x.size, 0);
+    const room = !drive || size <= drive.free;
+    if (auto && room && (files.length === 1 || (videos === 1 && files.length <= 4))) return start(true);
     // Toujours affiché (même pour un seul fichier) : on vérifie le type, l'image, la catégorie
     sel = new Set(files.map((x) => x.index));
     phase = "choose";
@@ -92,6 +98,8 @@
   const selVisible = $derived(visible.filter((f) => sel.has(f.index)).length);
   const drive = $derived(disks.find((d) => t?.save_path?.toUpperCase().startsWith(d.mount.replace(/\\$/, "").toUpperCase())));
   const tooBig = $derived(drive && selSize > drive.free);
+  // Démarrage automatique : rien ne s'affiche, sauf si la liste des fichiers se fait attendre (magnet)
+  const quiet = $derived(auto && phase !== "choose" && waited < 6);
   const unit = $derived(hideSmall ? (t?.kind === "series" || t?.kind === "anime" ? "épisodes" : "vidéos") : "fichiers");
 
   function pretty(f) {
@@ -142,7 +150,7 @@
       }
       await torrentAction([hash], "resume");
       flash(auto ? `Téléchargement lancé : ${t?.title ?? "torrent"}` : `Téléchargement lancé · ${selVisible} ${unit}`);
-      onclose();
+      onclose(true);
     } catch (e) {
       flash(String(e));
       phase = "choose";
@@ -154,13 +162,13 @@
       await torrentAction([hash], "delete");
     } catch {}
     flash("Ajout annulé");
-    onclose();
+    onclose(false);
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && phase !== "starting" && cancel()} />
+<svelte:window onkeydown={(e) => e.key === "Escape" && phase !== "starting" && !quiet && cancel()} />
 
-{#if phase !== "starting" || files.length > 1}
+{#if !quiet && (phase !== "starting" || files.length > 1)}
   <div class="backdrop" transition:fade={{ duration: 140 }} role="presentation"></div>
   <div class="modal" transition:scale={{ start: 0.97, duration: 160 }} role="dialog" aria-label="Choisir les fichiers">
     <header>

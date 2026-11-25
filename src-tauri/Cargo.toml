@@ -1,6 +1,6 @@
 [package]
 name = "oneforall"
-version = "0.15.1"
+version = "0.15.2"
 description = "Une interface moderne pour qBittorrent"
 edition = "2021"
 
@@ -35,6 +35,8 @@ pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 base64 = "0.23.1"
 getrandom = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+minisign-verify = "0.3"
+mslnk = "0.1"
 
 # Binaire final : petit et rapide
 [profile.release]
