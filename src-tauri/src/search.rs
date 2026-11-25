@@ -4,6 +4,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::Serialize;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SearchResult {
@@ -148,18 +149,23 @@ pub async fn tmdb_ids(client: &Client, tmdb_key: &str, query: &str) -> (Option<i
         return (None, None);
     }
     let first = |kind: &'static str| async move {
-        let v: serde_json::Value = client
-            .get(format!("https://api.themoviedb.org/3/search/{kind}"))
-            .query(&[("api_key", tmdb_key), ("query", query), ("language", "fr-FR")])
-            .send()
-            .await
-            .ok()?
-            .json()
-            .await
-            .ok()?;
+        // TMDB n'est qu'un plus : on ne le laisse pas retarder la recherche
+        let v: serde_json::Value = tokio::time::timeout(Duration::from_secs(5), async {
+            client
+                .get(format!("https://api.themoviedb.org/3/search/{kind}"))
+                .query(&[("api_key", tmdb_key), ("query", query), ("language", "fr-FR")])
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()
+        })
+        .await
+        .ok()??;
         v["results"][0]["id"].as_i64()
     };
-    (first("tv").await, first("movie").await)
+    tokio::join!(first("tv"), first("movie"))
 }
 
 /// Recherche Torznab (C411 et tout tracker compatible Prowlarr/Jackett) : texte + série/film TMDB.
@@ -167,17 +173,23 @@ pub async fn torznab(client: &Client, base: &str, key: &str, query: &str, source
     if key.trim().is_empty() {
         return Err("Ajoute ta clé API C411 dans Réglages → Général → Intégrations.".into());
     }
-    let mut calls: Vec<Vec<(&str, String)>> = vec![vec![("t", "search".into()), ("q", query.into())]];
-    if let Some(id) = tmdb.0 {
-        calls.push(vec![("t", "tvsearch".into()), ("tmdbid", id.to_string())]);
-    }
-    if let Some(id) = tmdb.1 {
-        calls.push(vec![("t", "movie".into()), ("tmdbid", id.to_string())]);
-    }
+    // Les recherches (texte, série, film) partent en même temps
+    let by_id = |t: &'static str, id: Option<i64>| async move {
+        match id {
+            Some(id) => Some(torznab_once(client, base, key, vec![("t", t.into()), ("tmdbid", id.to_string())], source).await),
+            None => None,
+        }
+    };
+    let (text, tv, movie) = tokio::join!(
+        torznab_once(client, base, key, vec![("t", "search".into()), ("q", query.into())], source),
+        by_id("tvsearch", tmdb.0),
+        by_id("movie", tmdb.1),
+    );
+    let results = [Some(text), tv, movie].into_iter().flatten();
     let mut all: Vec<SearchResult> = Vec::new();
     let mut first_err = None;
-    for params in calls {
-        match torznab_once(client, base, key, params, source).await {
+    for res in results {
+        match res {
             Ok(list) => {
                 for r in list {
                     if !all.iter().any(|x| x.url == r.url || (!r.hash.is_empty() && x.hash == r.hash)) {
@@ -293,6 +305,32 @@ static RE_MAGNET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"magnet:\?xt=u
 static RE_BTIH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)btih:([0-9a-z]+)").unwrap());
 static RE_FG_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)Repack Size:\s*(?:<[^>]+>\s*)*(?:from\s+)?([\d.,]+)\s*([KMGT]B)").unwrap());
 
+fn search_words(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .replace('&', " and ")
+        .chars()
+        .map(|c| match c {
+            'à' | 'â' | 'ä' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'î' | 'ï' => 'i',
+            'ô' | 'ö' => 'o',
+            'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            c if c.is_alphanumeric() => c,
+            _ => ' ',
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Tous les mots cherchés sont dans le titre (un mot long peut n'en être que le début : « remaster » → « remastered »)
+fn title_matches(title: &str, query: &str) -> bool {
+    let t = search_words(title);
+    search_words(query).iter().all(|w| t.iter().any(|x| x == w || (w.chars().count() > 3 && x.starts_with(w.as_str()))))
+}
+
 /// FitGirl Repacks (jeux PC compressés) : API WordPress du site, magnet dans le contenu de chaque article.
 pub async fn fitgirl(client: &Client, query: &str) -> Result<Vec<SearchResult>, String> {
     let res = client
@@ -308,9 +346,13 @@ pub async fn fitgirl(client: &Client, query: &str) -> Result<Vec<SearchResult>, 
     Ok(posts
         .iter()
         .filter_map(|p| {
+            let title = strip_tags(p["title"]["rendered"].as_str().unwrap_or_default());
+            // La recherche WordPress fouille tout le texte des articles : on ne garde que les titres qui correspondent
+            if !title_matches(&title, query) {
+                return None;
+            }
             let html = p["content"]["rendered"].as_str()?;
             let magnet = decode(RE_MAGNET.find(html)?.as_str());
-            let title = strip_tags(p["title"]["rendered"].as_str().unwrap_or_default());
             let size = RE_FG_SIZE.captures(html).map(|c| parse_size(&format!("{} {}", c[1].replace(',', "."), &c[2]))).unwrap_or(0);
             let hash = RE_BTIH.captures(&magnet).map(|c| c[1].to_lowercase()).filter(|h| h.len() == 40).unwrap_or_default();
             let name = title.split([',', '–', '+', '(']).next().unwrap_or(&title).trim().to_string();
@@ -576,6 +618,16 @@ async fn online_fix_game(client: &Client, page: String, title: String) -> Vec<Se
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fitgirl_title_filter() {
+        use super::title_matches;
+        assert!(title_matches("007 First Light – Deluxe Edition, v1.0 + 3 DLCs", "007 first light"));
+        assert!(title_matches("Élden Ring: Nightreign", "elden ring"));
+        assert!(title_matches("Final Fantasy VII Remastered", "final fantasy vii remaster"));
+        assert!(!title_matches("Playrooms", "007 first light"));
+        assert!(!title_matches("StarCraft: Remastered – v1.23.10.13515", "007 first light"));
+    }
+
     #[test]
     fn online_fix_parsing() {
         assert_eq!(super::cp1251(b"Valheim \xEF\xEE \xF1\xE5\xF2\xE8"), "Valheim по сети");

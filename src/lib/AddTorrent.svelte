@@ -138,7 +138,12 @@
     await Promise.all(
       srcs.map(async (x) => {
         try {
-          const res = await searchTorrents(q, x);
+          // Un site qui ne répond pas ne bloque pas la recherche indéfiniment (NXBrew est lent : plus de marge)
+          const limit = x === "nxbrew" ? 60000 : 30000;
+          const res = await Promise.race([
+            searchTorrents(q, x),
+            new Promise((_, ko) => setTimeout(() => ko("Le site met trop de temps à répondre"), limit)),
+          ]);
           if (id !== run) return;
           const seen = new Set(results.map((r) => r.url));
           results = [...results, ...res.filter((r) => !seen.has(r.url))];
