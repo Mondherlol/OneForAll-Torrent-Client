@@ -305,6 +305,22 @@ static RE_MAGNET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"magnet:\?xt=u
 static RE_BTIH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)btih:([0-9a-z]+)").unwrap());
 static RE_FG_SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)Repack Size:\s*(?:<[^>]+>\s*)*(?:from\s+)?([\d.,]+)\s*([KMGT]B)").unwrap());
 
+static RE_NYAA_DESC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)id="torrent-description">(.*?)</div>"#).unwrap());
+static RE_NYAA_FILES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?s)class="torrent-file-list panel-body">(.*?)</div>"#).unwrap());
+
+/// Description et noms de fichiers d'un torrent Nyaa (langues, source, codec y sont souvent précisés)
+pub async fn nyaa_details(client: &Client, page: &str) -> Result<String, String> {
+    if !page.starts_with("https://nyaa.si/view/") {
+        return Err("Page Nyaa invalide".into());
+    }
+    let html = client.get(page).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+    // Les commentaires (« pas de VF ici ? ») ne comptent pas
+    let html = html.split(r#"id="comments""#).next().unwrap_or_default();
+    let desc = RE_NYAA_DESC.captures(html).map(|c| decode(&c[1])).unwrap_or_default();
+    let files = RE_NYAA_FILES.captures(html).map(|c| strip_tags(&c[1].replace("</li>", "\n"))).unwrap_or_default();
+    Ok(format!("{desc}\n{files}").chars().take(8000).collect())
+}
+
 fn search_words(s: &str) -> Vec<String> {
     s.to_lowercase()
         .replace('&', " and ")

@@ -575,6 +575,13 @@ async fn search_torrents(state: State<'_, AppState>, query: String, source: Stri
     }
 }
 
+/// Description d'un torrent Nyaa : sert à la recherche intelligente pour vérifier la VF / les VOSTFR.
+#[tauri::command]
+async fn nyaa_details(page: String) -> Result<String, String> {
+    let client = reqwest::Client::builder().user_agent("OneForAll/0.4").timeout(Duration::from_secs(10)).build().map_err(|e| e.to_string())?;
+    search::nyaa_details(&client, &page).await
+}
+
 /// Tendances du moment pour un genre (TMDB, AniList, IGDB) : écran d'accueil de la recherche.
 #[tauri::command]
 async fn trends_catalog(state: State<'_, AppState>, kind: String) -> Result<Vec<trends::Trend>, String> {
@@ -2515,6 +2522,7 @@ pub fn run() {
             set_location,
             organize_shows,
             search_torrents,
+            nyaa_details,
             stage_torrents,
             preview_torrent,
             uninstall_program,

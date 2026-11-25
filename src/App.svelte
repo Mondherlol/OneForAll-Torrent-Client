@@ -269,7 +269,7 @@
   // Torrents ajoutés sans démarrer, en attente du choix des fichiers (un à la fois)
   let staged = $state([]);
   let pickHidden = $state(false);
-  const autoPick = new Set(); // ajoutés via « Télécharger » dans la recherche : un seul épisode → démarre direct
+  const autoPick = new Map(); // hash → « one » (un seul épisode → démarre direct) | « all » (choix intelligent : tout)
   let launched = false;
   // Fin du choix des fichiers d'un torrent : une fois la file vidée, si quelque chose a démarré
   // depuis la recherche, on la ferme et on montre la bibliothèque
@@ -297,7 +297,7 @@
       refreshDownloads();
     }
     if (res.hashes?.length) {
-      if (res.auto) res.hashes.forEach((h) => autoPick.add(h));
+      if (res.auto) res.hashes.forEach((h) => autoPick.set(h, res.auto === "all" ? "all" : "one"));
       staged = [...staged, ...res.hashes.filter((h) => !staged.includes(h))];
     }
     refresh();
@@ -1155,7 +1155,7 @@
     <PickFiles
       hash={staged[0]}
       {torrents}
-      auto={autoPick.has(staged[0])}
+      auto={autoPick.get(staged[0]) ?? false}
       onclose={pickDone}
       onfreespace={() => ((pickHidden = true), (settingsTab = "storage"), (settingsOpen = true))}
     />

@@ -7,6 +7,7 @@
   import { KIND_LABEL, fmtSize } from "./model.js";
   import { arts, flash, wantArt } from "./ui.svelte.js";
 
+  // auto « all » : choix intelligent → tout le torrent démarre (sauf manque de place)
   // auto : ajouté depuis la recherche par un clic sur « Télécharger » → un torrent d'un seul épisode
   // (ou d'un seul fichier) démarre directement, sans redemander. onclose(true) = lancé, onclose(false) = annulé.
   let { hash, torrents, onclose, onfreespace, auto = false } = $props();
@@ -50,7 +51,7 @@
     const videos = files.filter((x) => VIDEO.test(x.name)).length;
     const size = files.reduce((s, x) => s + x.size, 0);
     const room = !drive || size <= drive.free;
-    if (auto && room && (files.length === 1 || (videos === 1 && files.length <= 4))) return start(true);
+    if (auto && room && (auto === "all" || files.length === 1 || (videos === 1 && files.length <= 4))) return start(true);
     // Toujours affiché (même pour un seul fichier) : on vérifie le type, l'image, la catégorie
     sel = new Set(files.map((x) => x.index));
     phase = "choose";

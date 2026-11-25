@@ -5,7 +5,8 @@
   import Icon from "./Icon.svelte";
   import ConsoleBadge from "./ConsoleBadge.svelte";
   import Carousel from "./Carousel.svelte";
-  import { getSettings, hostDownload, nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
+  import { SMART_DEFAULTS, matchesAll, parseRelease, scoreRelease } from "./smart.js";
+  import { getSettings, hostDownload, nyaaDetails, nxbrewLinks, openUrl, previewTorrent, romDownload, romVersions, searchTorrents, sitePopular, stageTorrents, trendsCatalog } from "./api.js";
   import { KINDS, KIND_LABEL, fmtAgo, fmtSize } from "./model.js";
   import { arts, flash, openMenu, wantArt } from "./ui.svelte.js";
   import icoNyaa from "../assets/sources/nyaa.png";
@@ -130,6 +131,7 @@
     asked = q;
     selected = null;
     picked = new Set();
+    smartSeason = null;
     kindF = "all";
     srcF = "all";
     results = [];
@@ -166,13 +168,14 @@
 
   // Plusieurs torrents d'un coup (épisodes d'une même release). auto : un torrent d'un seul
   // épisode/fichier démarre sans repasser par la fenêtre de choix des fichiers.
-  async function addMany(list, grp = null) {
+  // all : choix intelligent (saison complète…) → tous les fichiers, sans repasser par la fenêtre des fichiers
+  async function addMany(list, grp = null, all = false) {
     list = list.filter((r) => !busy.has(r.url) && !isHave(r));
     if (!list.length) return;
     busy = new Set([...busy, ...list.map((r) => r.url)]);
     // Résultat d'une recherche d'épisode : il rejoint la série, même si son nom diffère
     const grpLink = link && grp?.list.some((e) => matchesEp(e.r.title)) ? link : null;
-    const res = { hashes: [], errors: [], direct: [], auto: true };
+    const res = { hashes: [], errors: [], direct: [], auto: all ? "all" : "one" };
     try {
       const outs = await pool(list, 4, (r) =>
         stageTorrents([r.url], [], grpLink ?? (link && matchesEp(r.title) ? link : null)).catch((e) => ({ hashes: [], errors: [String(e)], direct: [] })),
@@ -416,6 +419,70 @@
   }
   const unpick = (g) => (picked = new Set([...picked].filter((u) => !g.list.some((e) => e.r.url === u))));
 
+  // ---------- recherche intelligente : la meilleure release, en un clic ----------
+  let smartOn = $state(localStorage.getItem("oneforall.smartOn") !== "0");
+  $effect(() => localStorage.setItem("oneforall.smartOn", smartOn ? "1" : "0"));
+  let smartPrefs = $state({ ...SMART_DEFAULTS, ...JSON.parse(localStorage.getItem("oneforall.smart") ?? "{}") });
+  $effect(() => localStorage.setItem("oneforall.smart", JSON.stringify(smartPrefs)));
+  let smartSeason = $state(null); // saison choisie (null = la meilleure trouvée)
+  let smartPrefsOpen = $state(false);
+  let details = $state({}); // page Nyaa → description (null = en cours de lecture)
+  const SRC_RANK = { remux: 5, bluray: 4, webdl: 3, webrip: 2, hdtv: 1, "": 0, cam: -1 };
+  const covers = (info, s) => (info.pack === "season" && info.season === s) || (info.pack === "multi" && info.seasons && s >= info.seasons[0] && s <= info.seasons[1]);
+  const smart = $derived.by(() => {
+    if (!smartOn || !results?.length) return null;
+    const pool = results.filter((r) => ["c411", "nyaa", "fitgirl", "online-fix"].includes(r.source) && r.seeders !== 0);
+    // Seulement ce qui correspond vraiment à la recherche (sinon : les plus pertinents)
+    let cand = pool.filter((r) => matchesAll(r.title, qWords, words) || matchesAll(r.clean ?? "", qWords, words));
+    if (!cand.length) cand = pool.filter((r) => (rel.get(r.url) ?? 0) >= 60);
+    if (!cand.length) return null;
+    // Type cherché : celui du genre choisi, sinon le plus représenté (pondéré par les sources)
+    const w = {};
+    for (const r of cand) w[r.kind] = (w[r.kind] ?? 0) + 1 + Math.log10(1 + Math.max(0, r.seeders));
+    const kind = genre !== "all" && w[genre] ? genre : Object.entries(w).sort((a, b) => b[1] - a[1])[0][0];
+    if (!["film", "series", "anime", "game"].includes(kind)) return null;
+    const wantPack = !epCode;
+    const scored = cand
+      .filter((r) => r.kind === kind)
+      .map((r) => {
+        const info = parseRelease(r.title, details[r.page] ?? "");
+        return { r, info, ...scoreRelease(r, info, { prefs: smartPrefs, kind, wantPack }) };
+      })
+      .sort((a, b) => b.score - a.score);
+    // Séries : une saison à la fois (sélecteur)
+    const seasons = kind !== "film" && kind !== "game" && wantPack ? [...new Set(scored.filter((x) => x.info.pack === "season" && x.info.season != null).map((x) => x.info.season))].sort((a, b) => a - b) : [];
+    const season = smartSeason != null && seasons.includes(smartSeason) ? smartSeason : null;
+    const list = season != null ? scored.filter((x) => covers(x.info, season)) : scored;
+    const best = list[0];
+    if (!best || best.score < 0) return null;
+    // Alternatives : même contenu (même saison / même film), avec des sources
+    const same = kind === "game" ? [] : list.filter((x) => x !== best && x.r.seeders >= 3 && x.info.pack === best.info.pack && x.info.season === best.info.season && x.info.source !== "cam");
+    const lighter = same.filter((x) => x.r.size > 0 && x.r.size < best.r.size * 0.75 && x.info.res >= 720 && x.score > best.score - 50)[0];
+    const better = same.filter((x) => x.r.size > best.r.size && (x.info.res > best.info.res || (x.info.res === best.info.res && SRC_RANK[x.info.source] > SRC_RANK[best.info.source])))[0];
+    // Descriptions Nyaa à lire (langues réelles) : les mieux classées
+    const verify = kind === "game" ? [] : scored.filter((x) => x.r.source === "nyaa" && x.r.page).slice(0, 6).map((x) => x.r.page);
+    return { kind, best, lighter, better, seasons, season: season ?? best.info.season, verify };
+  });
+  $effect(() => {
+    const pages = smart?.verify ?? [];
+    untrack(() => {
+      for (const p of pages) {
+        if (p in details) continue;
+        details[p] = null;
+        nyaaDetails(p)
+          .then((t) => (details[p] = t))
+          .catch(() => (details[p] = ""));
+      }
+    });
+  });
+  const verifying = $derived((smart?.verify ?? []).some((p) => details[p] === null));
+  const LANG_OPTS = [
+    { id: "multi", label: "MULTI (VF + VOSTFR)" },
+    { id: "vf", label: "VF d'abord" },
+    { id: "vostfr", label: "VOSTFR d'abord" },
+    { id: "any", label: "Peu importe" },
+  ];
+
   // ---------- affiches (chargées quand la ligne devient visible) ----------
   function lazyArt(node, r) {
     if (r.thumb) return;
@@ -646,6 +713,7 @@
           <label class="alive ep"><input type="checkbox" bind:checked={epOnly} />Seulement l'épisode {epCode}</label>
         {/if}
         <label class="alive"><input type="checkbox" bind:checked={aliveOnly} />Avec sources</label>
+        {#if !smartOn}<button class="sm-on" onclick={() => (smartOn = true)} title="Propose la meilleure release selon tes préférences">★ Choix intelligent</button>{/if}
       </div>
     {/if}
 
@@ -667,6 +735,74 @@
             {#if !results.length && genre !== "all"}<button class="btn" onclick={() => pickGenre("all")}><Icon name="layers" size={14} />Chercher sur tous les sites</button>{/if}
           </div>
         {:else if results}
+          {#if smart}
+            {@const b = smart.best}
+            {@const bart = arts[b.r.art_key]}
+            {@const bHave = isHave(b.r)}
+            {#snippet altRow(x, label)}
+              {@const xHave = isHave(x.r)}
+              <div class="sm-alt">
+                <span class="sm-alt-l">{label}</span>
+                <button class="sm-alt-b" onclick={() => select(x.r)} title={x.r.title}>
+                  <span class="sm-why">{x.why.filter((y) => !/complète|Intégrale|Saisons|Pack/.test(y)).join(" · ") || x.r.title}</span>
+                  <span class="sm-num">{fmtSize(x.r.size)} · ↑ {x.r.seeders}</span>
+                </button>
+                {#if xHave}<span class="done"><Icon name="check" size={14} /></span>
+                {:else}<button class="dl" disabled={busy.has(x.r.url)} title="Télécharger" onclick={() => addMany([x.r], null, true)}>{#if busy.has(x.r.url)}<span class="spinner"></span>{:else}<Icon name="down" size={15} />{/if}</button>{/if}
+              </div>
+            {/snippet}
+            <section class="smart" transition:slide={{ duration: 160 }}>
+              <div class="sm-top">
+                <span class="sm-label">★ Meilleur choix</span>
+                {#if loading || verifying}<span class="sm-wait"><span class="spinner"></span>{verifying ? "Vérification des langues sur Nyaa…" : "Analyse en cours…"}</span>{/if}
+                <span class="spacer"></span>
+                {#if smart.seasons.length > 1}
+                  <span class="sm-seasons">
+                    {#each smart.seasons as s}<button class:on={smart.season === s} onclick={() => (smartSeason = s)}>S{s}</button>{/each}
+                  </span>
+                {/if}
+                <button class="sm-gear" class:on={smartPrefsOpen} title="Mes préférences" onclick={() => (smartPrefsOpen = !smartPrefsOpen)}><Icon name="settings" size={14} /></button>
+              </div>
+              {#if smartPrefsOpen}
+                <div class="sm-prefs" transition:slide={{ duration: 140 }}>
+                  <label>Langue<select bind:value={smartPrefs.lang}>{#each LANG_OPTS as o}<option value={o.id}>{o.label}</option>{/each}</select></label>
+                  <label>Qualité<select bind:value={smartPrefs.res}><option value="720">720p</option><option value="1080">1080p</option><option value="2160">4K</option></select></label>
+                  <label>Taille<select bind:value={smartPrefs.codec}><option value="x265">x265 (léger)</option><option value="any">Peu importe</option></select></label>
+                  <label class="sm-chk"><input type="checkbox" bind:checked={smartPrefs.bluray} />BluRay en priorité</label>
+                  <button class="sm-off" onclick={() => ((smartOn = false), (smartPrefsOpen = false))}>Désactiver</button>
+                </div>
+              {/if}
+              <div class="sm-main">
+                <button class="sm-pick" onclick={() => select(b.r)} title={b.r.title}>
+                  <span class="thumb k-{b.r.kind}">
+                    {#if b.r.thumb || bart?.url}<img src={b.r.thumb || bart.url} alt="" />{:else}<Icon name={b.r.kind} size={20} />{/if}
+                  </span>
+                  <span class="rbody">
+                    <span class="sm-title">{b.r.clean || b.r.title}{#if b.r.year} <small>({b.r.year})</small>{/if}</span>
+                    <span class="sm-tags">
+                      {#each b.why as y}<span class="sm-tag" class:ok={y.endsWith("✓")}>{y}</span>{/each}
+                      {#if smart.kind !== "game" && b.info.lang === "unknown"}<span class="sm-tag warn" title="Ni le nom ni la description n'indiquent de VF ou de VOSTFR">Pas de FR trouvé</span>{/if}
+                    </span>
+                    <span class="rmeta">
+                      {#if SOURCES[b.r.source]}<span class="rsrc">{@render sico(b.r.source)}</span>{/if}
+                      {#if b.r.seeders >= 0}<b class="seed">↑ {b.r.seeders}</b>{/if}
+                      {#if b.r.size > 0}<span>{fmtSize(b.r.size)}</span>{/if}
+                      <span class="sm-raw">{b.r.title}</span>
+                    </span>
+                  </span>
+                </button>
+                {#if bHave}
+                  <span class="done big"><Icon name="check" size={15} />Déjà ajouté</span>
+                {:else}
+                  <button class="g-go big" disabled={busy.has(b.r.url)} onclick={() => addMany([b.r], null, true)}>
+                    {#if busy.has(b.r.url)}<span class="spinner light"></span>{:else}<Icon name="down" size={15} />{/if}Télécharger
+                  </button>
+                {/if}
+              </div>
+              {#if smart.lighter}{@render altRow(smart.lighter, "Plus léger")}{/if}
+              {#if smart.better}{@render altRow(smart.better, "Meilleure qualité")}{/if}
+            </section>
+          {/if}
           <ul>
             {#each items as it (it.g ? it.g.key : it.r.url)}
               {#if it.g}
@@ -1085,6 +1221,42 @@
   .done { flex: none; display: inline-flex; align-items: center; gap: 5px; color: var(--ok); font-size: 12.5px; font-weight: 700; padding: 0 9px; }
   .done.big { padding: 0 6px; }
   .dl:disabled { cursor: progress; }
+
+  /* recherche intelligente */
+  .smart { margin: 6px 0 10px; padding: 10px 12px 12px; border-radius: 14px; border: 1.5px solid color-mix(in srgb, var(--accent) 45%, transparent); background: linear-gradient(135deg, var(--accent-soft), var(--surface) 70%); }
+  .sm-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .sm-label { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--accent); }
+  .sm-wait { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .spacer { flex: 1; }
+  .sm-seasons { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--chip); }
+  .sm-seasons button { height: 24px; min-width: 32px; padding: 0 7px; border: 0; border-radius: 6px; background: none; color: var(--text-2); font: inherit; font-size: 11.5px; font-weight: 750; cursor: pointer; }
+  .sm-seasons button.on { background: var(--surface); color: var(--accent); box-shadow: var(--shadow-sm); }
+  .sm-gear { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; border: 0; background: none; color: var(--muted); cursor: pointer; }
+  .sm-gear:hover, .sm-gear.on { background: var(--chip); color: var(--text); }
+  .sm-prefs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 8px; padding: 8px 10px; border-radius: 10px; background: var(--bg-2); font-size: 12px; color: var(--muted); }
+  .sm-prefs label { display: inline-flex; align-items: center; gap: 6px; }
+  .sm-prefs select { height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); font: inherit; font-size: 12px; }
+  .sm-chk { cursor: pointer; color: var(--text-2); }
+  .sm-off { margin-left: auto; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; }
+  .sm-main { display: flex; align-items: center; gap: 10px; }
+  .sm-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 2px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .sm-pick .thumb { width: 52px; height: 76px; border-radius: 8px; box-shadow: var(--shadow-sm); }
+  .sm-title { font-size: 15px; font-weight: 700; line-height: 1.25; }
+  .sm-title small { font-weight: 500; color: var(--muted); }
+  .sm-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+  .sm-tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line-strong); color: var(--text-2); }
+  .sm-tag.ok { border-color: color-mix(in srgb, var(--ok) 45%, transparent); color: var(--ok); }
+  .sm-tag.warn { border-color: color-mix(in srgb, #d97706 50%, transparent); color: #d97706; }
+  .sm-raw { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; opacity: 0.75; }
+  .g-go.big { height: 40px; padding: 0 18px; font-size: 13.5px; }
+  .sm-alt { display: flex; align-items: center; gap: 10px; margin-top: 6px; padding: 4px 0 0 64px; border-top: 1px dashed var(--line); }
+  .sm-alt-l { flex: none; width: 116px; font-size: 11.5px; font-weight: 750; color: var(--muted); }
+  .sm-alt-b { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 4px 6px; border: 0; border-radius: 7px; background: none; color: var(--text-2); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+  .sm-alt-b:hover { background: var(--chip); }
+  .sm-why { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sm-num { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sm-alt .dl { width: 30px; height: 30px; }
+  .sm-on { height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 
   /* release en plusieurs torrents (un par épisode) */
   .results li.grp { flex-direction: column; align-items: stretch; gap: 2px; margin: 3px 0; padding: 4px 8px 10px 4px; border: 1px solid var(--line); background: var(--surface); }

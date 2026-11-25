@@ -40,6 +40,7 @@ export const setLocation = (hashes, location) => invoke("set_location", { hashes
 export const uninstallProgram = (name) => invoke("uninstall_program", { name });
 export const runSetup = (hash) => invoke("run_setup", { hash });
 export const searchTorrents = (query, source = "nyaa") => invoke("search_torrents", { query, source });
+export const nyaaDetails = (page) => invoke("nyaa_details", { page });
 export const testNotification = () => invoke("test_notification");
 export const getSeeding = () => invoke("get_seeding");
 export const setSeeding = (enabled) => invoke("set_seeding", { enabled });
